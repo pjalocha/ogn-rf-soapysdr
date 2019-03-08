@@ -431,13 +431,13 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      int ErrorCount=0;
 
      double TimeDiffRMS=0; int TimeDiffCnt=0;
-     uint32_t PrevSlotTime = 0;
+     uint32_t PrevSlotTime = 1;
      double prevOGN_Gain=0;
      int prevCenterFreq=0;
      while(!StopReq)
      { double EndTime = InpBuffer->Time + InpBuffer->Full/DevSampleRate;    // [sec] time of the end of the current slice
        uint32_t SlotTime = (uint32_t)floor(EndTime-OGN_StartTime);          // [sec] time corresponding to the current slot
-       if( (SlotTime>PrevSlotTime) || (InpBuffer->Full>=(SliceSamples+BlockSize)) ) // time for a new slice ?
+       if( (InpBuffer->Full) && ((SlotTime>PrevSlotTime) || (InpBuffer->Full>=(SliceSamples+BlockSize))) ) // time for a new slice ?
        { int CenterFreq = calcCenterFreq(InpBuffer->Date+SlotTime);         // calc. new center frequency
          if(CenterFreq!=prevCenterFreq)                                     // if different from the previous one
          { if(setCenterFreq(CenterFreq)<0) StopReq=1; }                     // then change it
