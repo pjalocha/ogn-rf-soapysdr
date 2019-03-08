@@ -54,7 +54,7 @@ all:    ogn-rf-soapysdr
 
 ogn-rf-soapysdr:	Makefile ogn-rf-soapysdr.cc thread.h fft.h buffer.h image.h sysmon.h serialize.h socket.h freqplan.h
 	g++ $(FLAGS) $(GPU_FLAGS) -o ogn-rf-soapysdr ogn-rf-soapysdr.cc format.cpp serialize.cpp $(GPU_SRC) $(LIBS) -lSoapySDR -lfftw3 -lfftw3f
-# ifdef USE_RPI_GPU_FFT
+ifdef USE_RPI_GPU_FFT
 	sudo chown root ogn-rf-soapysdr
 	sudo chmod a+s  ogn-rf-soapysdr
-# endif
+endif

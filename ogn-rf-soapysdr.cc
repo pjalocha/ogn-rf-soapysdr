@@ -95,13 +95,14 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
    char                    FilePrefix[16];
    int                     OGN_SaveRawData;
-   MessageQueue<Socket *>  RawDataQueue;               // sockets send to this queue should be written with a most recent raw data
+   // MessageQueue<Socket *>  RawDataQueue;               // sockets send to this queue should be written with a most recent raw data
    MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
    DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
    int                     SpectrogramFFTsize;         // FFT size for the spectrogram
    float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
    SampleBuffer< std::complex<float> > SpectraBuffer;  //
    SampleBuffer<float>     SpectraPwr;
+   float                   SpectraBkgNoise;
    SampleBuffer<uint8_t>   Image;
    JPEG                    JpegImage;
 
@@ -115,7 +116,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
    RF_Acq() { RefDate = 0;
               Config_Defaults();
               // PulseBox.Preset(PulseBoxSize);
-              SpectrogramWindow=0;
+              SpectrogramWindow=0; SpectraBkgNoise=128;
               // StartTime=0; CountAllTimeSlots=0; CountLifeTimeSlots=0;
               StopReq=0; Thr.setExec(ThreadExec); }
 
@@ -280,7 +281,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
    void *Exec(void)
    { printf("RF_Acq.Exec() ... Start\n");
-
+     char Header[256];
      int Priority = Thr.getMaxPriority(SCHED_RR); Thr.setPriority(Priority, SCHED_RR);
      int CurrCenterFreq = calcCenterFreq(0);
 
@@ -393,7 +394,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
        }
      }
 
-      if(SoapySDRDevice_setupStream(SDR, &Stream, SOAPY_SDR_RX, Format, 0, 0, 0) != 0) // ( , , , format, *channels, numChannels, *args)
+     if(SoapySDRDevice_setupStream(SDR, &Stream, SOAPY_SDR_RX, Format, 0, 0, 0) != 0) // ( , , , format, *channels, numChannels, *args)
      { printf("SDR.setupStream failes: %s\n", SoapySDRDevice_lastError()); StopReq=1; }
      SoapySDRDevice_activateStream(SDR, Stream, 0, 0, 0); // ( , , flags, timeNs, numElems)         // start streaming
      // printf("\n");
@@ -427,7 +428,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      InpBuffer->Time = getTime();                                           // [sec]
 
      int Timeout_usec = 50000+floor(8*1e6*BlockSize/DevSampleRate+0.5);        // [usec] (over) estimate the timeout
-      int ErrorCount=0;
+     int ErrorCount=0;
 
      double TimeDiffRMS=0; int TimeDiffCnt=0;
      uint32_t PrevSlotTime = 0;
@@ -460,6 +461,24 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
              fclose(File);
              printf("SaveRawData -> %s (%dsec)\n", FileName, OGN_SaveRawData);
              OGN_SaveRawData--; }
+         }
+         if(SpectrogramQueue.Size())
+         { SlidingFFT(SpectraBuffer, *InpBuffer, SpectrogramFFT, SpectrogramWindow);
+           SpectraPower(SpectraPwr, SpectraBuffer);                                            // calc. spectra power
+           LogImage(Image, SpectraPwr, (float)SpectraBkgNoise, (float)32.0, (float)32.0);      // make the image
+           JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                  // and into JPEG
+           std::nth_element(SpectraPwr.Data, SpectraPwr.Data+SpectraPwr.Full/2, SpectraPwr.Data+SpectraPwr.Full);
+           SpectraBkgNoise=SpectraPwr.Data[SpectraPwr.Full/2];
+         }
+         while(SpectrogramQueue.Size())
+         { Socket *Client; SpectrogramQueue.Pop(Client);
+           // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
+           sprintf(Header, "HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
+Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\"\r\n\r\n",
+                   FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
+           Client->Send(Header);
+           Client->Send(JpegImage.Data, JpegImage.Size);
+           Client->SendShutdown(); Client->Close(); delete Client;
          }
          if(QueueSize<8)                                                       // decide if push th enew slice into the outgoing queue
          { NextInp = OutQueueCS16.New();
@@ -714,9 +733,221 @@ template <class Float>
 
 // ==================================================================================================
 
-  RF_Acq             RF;                         // RF input: acquires RF data for OGN and selected GSM frequency
+
+template <class Float>
+ class HTTP_Server
+{ public:
+
+   int                 Port;      // listenning port
+   Thread              Thr;       // processing thread
+   RF_Acq             *RF;        // pointer to RF acquisition
+   Inp_FFT<Float>     *OGN;
+   char                Host[32];  // Host name
+   char     ConfigFileName[PATH_MAX];
+
+  public:
+   HTTP_Server(RF_Acq *RF, Inp_FFT<Float> *OGN)
+   { this->RF=RF; this->OGN=OGN;
+     Host[0]=0; SocketAddress::getHostName(Host, 32);
+     Config_Defaults(); }
+
+   void Config_Defaults(void)
+   { ConfigFileName[0]=0;
+     Port=8080; }
+
+   int Config(config_t *Config)
+   { config_lookup_int(Config, "HTTP.Port", &Port); return 0; }
+
+   void Start(void)
+   { if(Port<=0) return;
+     Thr.setExec(ThreadExec); Thr.Create(this); }
+
+  ~HTTP_Server()
+   { if(Port) Thr.Cancel(); }
+
+   static void *ThreadExec(void *Context)
+   { HTTP_Server *This = (HTTP_Server *)Context; return This->Exec(); }
+
+   void *Exec(void)
+   { printf("HTTP_Server.Exec() ... Start\n");
+     while(1)
+     { Socket Listen;
+       // if(Listen.Create_STREAM()<0) { printf("HTTP_Server.Exec() ... Cannot Create_STREAM()\n"); sleep(1); continue; }
+       // if(Listen.setReuseAddress()<0) { printf("HTTP_Server.Exec() ... Cannot setReuseAddress()\n"); sleep(1); continue; }
+       if(Listen.Listen(Port)<0) { printf("HTTP_Server.Exec() ... Cannot listen() on port %d\n", Port); sleep(1); continue; }
+       printf("HTTP_Server.Exec() ... Listening on port %d\n", Port);
+       while(1)
+       { Socket *Client = new Socket; SocketAddress ClientAddress;
+         if(Listen.Accept(*Client, ClientAddress)<0) { printf("HTTP_Server.Exec() ... Cannot accept()\n"); sleep(1); break; }
+         printf("HTTP_Server.Exec() ... Client from %s\n", ClientAddress.getIPColonPort());
+         Client->setReceiveTimeout(2.0); Client->setSendTimeout(20.0); Client->setLinger(1, 5);
+         SocketBuffer Request; time_t ConnectTime; time(&ConnectTime);
+         while(1)
+         { if(Client->Receive(Request)<0) { printf("HTTP_Server.Exec() ... Cannot receive()\n"); Client->SendShutdown(); Client->Close(); delete Client; Client=0; break; }
+           if( Request.Len && strstr(Request.Data, "\r\n\r\n") ) break;
+           time_t Now; time(&Now);
+           if((Now-ConnectTime)>2) { printf("HTTP_Server.Exec() ... Request timeout\n"); Client->SendShutdown(); Client->Close(); delete Client; Client=0; break; }
+         }
+         if(Client)
+         { // printf("HTTP_Server.Exec() ... Request[%d]:\n", Request.Len); Request.WriteToFile(stdout); fflush(stdout);
+           ProcessRequest(Client, Request); }
+       }
+       Listen.Close();
+     }
+     printf("HTTP_Server.Exec() ... Stop\n");
+     return 0; }
+
+   int CopyWord(char *Dst, char *Src, int MaxLen)
+   { int Count=0; MaxLen-=1;
+     for( ; ; )
+     { char ch = (*Src++); if(ch<=' ') break;
+       if(Count>=MaxLen) return -1;
+       (*Dst++) = ch; Count++; }
+     (*Dst++)=0;
+     return Count; }
+
+   void ProcessRequest(Socket *Client, SocketBuffer &Request)
+   { if(memcmp(Request.Data, "GET ", 4)!=0) goto BadRequest;
+     char File[64]; if(CopyWord(File, Request.Data+4, 64)<0) goto BadRequest;
+     printf("HTTP_Server.Exec() ... Request for %s\n", File);
+
+          if(strcmp(File, "/")==0)
+     { Status(Client); return; }
+     else if( (strcmp(File, "/status.html")==0)         || (strcmp(File, "status.html")==0) )
+     { Status(Client); return; }
+     else if( (strcmp(File, "/spectrogram.jpg")==0) || (strcmp(File, "spectrogram.jpg")==0) )
+     { RF->SpectrogramQueue.Push(Client); return; }
+     // else if( (strcmp(File, "/time-slot-rf.u8")==0)  || (strcmp(File, "time-slot-rf.u8")==0) )
+     // { RF->RawDataQueue.Push(Client); return; }
+     // NotFound:
+       Client->Send("HTTP/1.0 404 Not Found\r\n\r\n"); Client->SendShutdown(); Client->Close(); delete Client; return;
+
+     BadRequest:
+       Client->Send("HTTP/1.0 400 Bad Request\r\n\r\n"); Client->SendShutdown(); Client->Close(); delete Client; return;
+   }
+
+   void Status(Socket *Client)
+   { Client->Send("\
+HTTP/1.1 200 OK\r\n\
+Cache-Control: no-cache\r\n\
+Content-Type: text/html\r\n\
+Refresh: 5\r\n\
+\r\n\
+<!DOCTYPE html>\r\n\
+<html>\r\n\
+");
+     // time_t Now; time(&Now);
+     dprintf(Client->SocketFile, "\
+<title>%s RTLSDR-OGN RF processor " STR(VERSION) " status</title>\n\
+<b>RTLSDR OGN RF processor " STR(VERSION) "/" __DATE__ "</b><br /><br />\n\n", Host);
+
+     dprintf(Client->SocketFile, "<table>\n<tr><th>System</th><th></th></tr>\n");
+
+     dprintf(Client->SocketFile, "<tr><td>Host name</td><td align=right><b>%s</b></td></tr>\n", Host);
+     dprintf(Client->SocketFile, "<tr><td>Configuration file path+name</td><td align=right><b>%s</b></td></tr>\n", ConfigFileName);
+     time_t Now; time(&Now);
+     struct tm TM; localtime_r(&Now, &TM);
+     dprintf(Client->SocketFile, "<tr><td>Local time</td><td align=right><b>%02d:%02d:%02d</b></td></tr>\n", TM.tm_hour, TM.tm_min, TM.tm_sec);
+     dprintf(Client->SocketFile, "<tr><td>Software</td><td align=right><b>" STR(VERSION) "</b></td></tr>\n");
+
+#ifndef __MACH__
+     struct sysinfo SysInfo;
+     if(sysinfo(&SysInfo)>=0)
+     { dprintf(Client->SocketFile, "<tr><td>CPU load</td><td align=right><b>%3.1f/%3.1f/%3.1f</b></td></tr>\n",
+                                   SysInfo.loads[0]/65536.0, SysInfo.loads[1]/65536.0, SysInfo.loads[2]/65536.0);
+       dprintf(Client->SocketFile, "<tr><td>RAM [free/total]</td><td align=right><b>%3.1f/%3.1f MB</b></td></tr>\n",
+                                   1e-6*SysInfo.freeram*SysInfo.mem_unit, 1e-6*SysInfo.totalram*SysInfo.mem_unit);
+     }
+#endif
+
+     float CPU_Temperature;
+     if(getCpuTemperature(CPU_Temperature)>=0)
+       dprintf(Client->SocketFile, "<tr><td>CPU temperature</td><td align=right><b>%+5.1f &#x2103;</b></td></tr>\n",    CPU_Temperature);
+     float SupplyVoltage=0;
+     if(getSupplyVoltage(SupplyVoltage)>=0)
+       dprintf(Client->SocketFile, "<tr><td>Supply voltage</td><td align=right><b>%5.3f V</b></td></tr>\n",    SupplyVoltage);
+     float SupplyCurrent=0;
+     if(getSupplyCurrent(SupplyCurrent)>=0)
+       dprintf(Client->SocketFile, "<tr><td>Supply current</td><td align=right><b>%5.3f A</b></td></tr>\n",    SupplyCurrent);
+
+     double NtpTime, EstError, RefFreqCorr;
+     if(getNTP(NtpTime, EstError, RefFreqCorr)>=0)
+     { time_t Time = floor(NtpTime);
+       struct tm TM; gmtime_r(&Time, &TM);
+       dprintf(Client->SocketFile, "<tr><td>NTP UTC time</td><td align=right><b>%02d:%02d:%02d</b></td></tr>\n", TM.tm_hour, TM.tm_min, TM.tm_sec);
+       dprintf(Client->SocketFile, "<tr><td>NTP est. error</td><td align=right><b>%3.1f ms</b></td></tr>\n", 1e3*EstError);
+       dprintf(Client->SocketFile, "<tr><td>NTP freq. corr.</td><td align=right><b>%+5.2f ppm</b></td></tr>\n", RefFreqCorr);
+     }
+/*
+     if(RF->SDR.isOpen())
+     { dprintf(Client->SocketFile, "<tr><th>RTL-SDR device #%d</th><th></th></tr>\n",                                  RF->SDR.DeviceIndex);
+       dprintf(Client->SocketFile, "<tr><td>Name</td><td align=right><b>%s</b></td></tr>\n",                           RF->SDR.getDeviceName());
+       dprintf(Client->SocketFile, "<tr><td>Tuner type</td><td align=right><b>%s</b></td></tr>\n",                     RF->SDR.getTunerTypeName());
+       char Manuf[256], Product[256], Serial[256];
+       RF->SDR.getUsbStrings(Manuf, Product, Serial);
+       dprintf(Client->SocketFile, "<tr><td>Manufacturer</td><td align=right><b>%s</b></td></tr>\n",                    Manuf);
+       dprintf(Client->SocketFile, "<tr><td>Product</td><td align=right><b>%s</b></td></tr>\n",                         Product);
+       dprintf(Client->SocketFile, "<tr><td>Serial</td><td align=right><b>%s</b></td></tr>\n",                          Serial);
+#ifdef NEW_RTLSDR_LIB
+       for(int Stage=0; Stage<8; Stage++)
+       { char Descr[256]; int Gains=RF->SDR.getTunerStageGains(Stage, 0, Descr); if(Gains<=0) break;
+         dprintf(Client->SocketFile, "<tr><td>Tuner stage #%d</td><td align=right><b>%s [%2d]</b></td></tr>\n",  Stage, Descr, Gains);
+       }
+       dprintf(Client->SocketFile, "<tr><td>Tuner bandwidths</td><td align=right><b>[%d]</b></td></tr>\n",             RF->SDR.getTunerBandwidths());
+       dprintf(Client->SocketFile, "<tr><td>Tuner gains</td><td align=right><b>[%d]</b></td></tr>\n",                  RF->SDR.getTunerGains());
+#endif
+       dprintf(Client->SocketFile, "<tr><td>Center frequency</td><td align=right><b>%7.3f MHz</b></td></tr>\n",        1e-6*RF->SDR.getCenterFreq());
+       dprintf(Client->SocketFile, "<tr><td>Sample rate</td><td align=right><b>%5.3f MHz</b></td></tr>\n",             1e-6*RF->SDR.getSampleRate());
+       dprintf(Client->SocketFile, "<tr><td>Frequency correction</td><td align=right><b>%+5.1f ppm</b></td></tr>\n",   RF->FreqCorr);
+       dprintf(Client->SocketFile, "<tr><td>Live Time</td><td align=right><b>%5.1f%%</b></td></tr>\n",         100*RF->getLifeTime());
+       uint32_t RtlFreq, TunerFreq; RF->SDR.getXtalFreq(RtlFreq, TunerFreq);
+       dprintf(Client->SocketFile, "<tr><td>RTL Xtal</td><td align=right><b>%8.6f MHz</b></td></tr>\n",                1e-6*RtlFreq);
+       dprintf(Client->SocketFile, "<tr><td>Tuner Xtal</td><td align=right><b>%8.6f MHz</b></td></tr>\n",              1e-6*TunerFreq);
+     }
+*/
+     dprintf(Client->SocketFile, "<tr><th>RF</th><th></th></tr>\n");
+     if(RF->OGN_CenterFreq==0)
+       dprintf(Client->SocketFile, "<tr><td>RF.FreqPlan</td><td align=right><b>%d: %s</b></td></tr>\n",   RF->HoppingPlan.Plan, RF->HoppingPlan.getPlanName() );
+     // dprintf(Client->SocketFile, "<tr><td>RF.Device</td><td align=right><b>%d</b></td></tr>\n",                       RF->DeviceIndex);
+     // if(RF->DeviceSerial[0])
+     //   dprintf(Client->SocketFile, "<tr><td>RF.DeviceSerial</td><td align=right><b>%s</b></td></tr>\n",               RF->DeviceSerial);
+     dprintf(Client->SocketFile, "<tr><td>RF.SampleRate</td><td align=right><b>%3.1f MHz</b></td></tr>\n",       1e-6*RF->SampleRate);
+     // dprintf(Client->SocketFile, "<tr><td>RF.PipeName</td><td align=right><b>%s</b></td></tr>\n",                  ??->OutPipeName );
+     dprintf(Client->SocketFile, "<tr><td>RF.FreqCorr</td><td align=right><b>%+4.1f ppm</b></td></tr>\n",             RF->FreqCorr);
+     // if(RF->FreqRaster)
+     //   dprintf(Client->SocketFile, "<tr><td>RF.FreqRaster</td><td align=right><b>%3d Hz</b></td></tr>\n",          RF->FreqRaster);
+     // if(RF->BiasTee>=0)
+     //   dprintf(Client->SocketFile, "<tr><td>RF.BiasTee</td><td align=right><b>%d</b></td></tr>\n",                    RF->BiasTee);
+     // dprintf(Client->SocketFile, "<tr><td>RF.OffsetTuning</td><td align=right><b>%d</b></td></tr>\n",                 RF->OffsetTuning);
+     if(RF->OGN_CenterFreq)
+      dprintf(Client->SocketFile, "<tr><td>RF.OGN.CenterFreq</td><td align=right><b>%5.1f MHz</b></td></tr>\n",  1e-6*RF->OGN_CenterFreq);
+     dprintf(Client->SocketFile, "<tr><td>RF.FFTsize</td><td align=right><b>%d</b></td></tr>\n",                      RF->FFTsize);
+     // dprintf(Client->SocketFile, "<tr><td>RF.OGN.GainMode</td><td align=right><b>%d</b></td></tr>\n",                 RF->OGN_GainMode);
+     dprintf(Client->SocketFile, "<tr><td>RF.OGN.Gain</td><td align=right><b>%4.1f dB</b></td></tr>\n",               RF->OGN_Gain);
+     // dprintf(Client->SocketFile, "<tr><td>RF.OGN.StartTime</td><td align=right><b>%5.3f sec</b></td></tr>\n",         RF->OGN_StartTime);
+     // dprintf(Client->SocketFile, "<tr><td>RF.OGN.SensTime</td><td align=right><b>%5.3f sec</b></td></tr>\n", (double)(RF->OGN_SamplesPerRead)/RF->SampleRate);
+     dprintf(Client->SocketFile, "<tr><td>RF.RemoveDC</td><td align=right><b>%d FFT bins</b></td></tr>\n",            OGN->RemoveDC);
+     dprintf(Client->SocketFile, "<tr><td>RF.OGN.SaveRawData</td><td align=right><b>%d sec</b></td></tr>\n",          RF->OGN_SaveRawData);
+
+
+     dprintf(Client->SocketFile, "</table>\n");
+
+     Client->Send("\
+<br />\r\n\
+RF spectrograms:\r\n\
+<a href='spectrogram.jpg'>OGN</a><br />\r\n\
+");
+
+     Client->Send("</html>\r\n");
+     Client->SendShutdown(); Client->Close(); delete Client; }
+
+} ;
+
+// ==================================================================================================
+
+  RF_Acq             RF;                         // RF input: acquires RF data for OGN
   Inp_FFT<float>     FFT(&RF);                   // FFT for OGN demodulator
-  // HTTP_Server<float> HTTP(&RF, &FFT);      // HTTP server to show status and spectrograms
+  HTTP_Server<float> HTTP(&RF, &FFT);            // HTTP server to show status and spectrograms
 
 void SigHandler(int signum) // Signal handler, when user pressed Ctrl-C or process stops for whatever reason
 { printf("Signal #%d\n", signum); RF.StopReq=1; FFT.StopReq=1; }
@@ -813,12 +1044,12 @@ int main(int argc, char *argv[])
 
   FFT.Config_Defaults();
   FFT.Config(&Config);
-  FFT.Preset();
+  FFT.Preset(RF.FFTsize);
 
-  // HTTP.Config_Defaults();
-  // if(realpath(ConfigFileName, HTTP.ConfigFileName)==0) HTTP.ConfigFileName[0]=0;
-  // HTTP.Config(&Config);
-  // HTTP.Start();
+  HTTP.Config_Defaults();
+  if(realpath(ConfigFileName, HTTP.ConfigFileName)==0) HTTP.ConfigFileName[0]=0;
+  HTTP.Config(&Config);
+  HTTP.Start();
 
   config_destroy(&Config);
 
