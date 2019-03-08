@@ -321,8 +321,9 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
        { printf("SDR.setAntenna failed: %s\n", SoapySDRDevice_lastError()); StopReq=1; }
      }
 
-     if(SoapySDRDevice_setGainMode(SDR, SOAPY_SDR_RX, Channel, 0) != 0)
-     { printf("SDR.setGainMode failed: %s\n", SoapySDRDevice_lastError()); StopReq=1; }
+     // this call crashes BladeRF
+     // if(SoapySDRDevice_setGainMode(SDR, SOAPY_SDR_RX, Channel, 0) != 0)
+     // { printf("SDR.setGainMode failed: %s\n", SoapySDRDevice_lastError()); StopReq=1; }
      if(SoapySDRDevice_setGain(SDR, SOAPY_SDR_RX, Channel, OGN_Gain) != 0)
      { printf("SDR.setGain failed: %s\n", SoapySDRDevice_lastError()); StopReq=1; }
 
@@ -473,7 +474,8 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
          while(SpectrogramQueue.Size())
          { Socket *Client; SpectrogramQueue.Pop(Client);
            // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
-           sprintf(Header, "HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
+           sprintf(Header, "HTTP/1.1 200 OK\r\n\
+Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
 Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\"\r\n\r\n",
                    FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
            Client->Send(Header);
@@ -1044,7 +1046,7 @@ int main(int argc, char *argv[])
 
   FFT.Config_Defaults();
   FFT.Config(&Config);
-  FFT.Preset(RF.FFTsize);
+  FFT.Preset();
 
   HTTP.Config_Defaults();
   if(realpath(ConfigFileName, HTTP.ConfigFileName)==0) HTTP.ConfigFileName[0]=0;

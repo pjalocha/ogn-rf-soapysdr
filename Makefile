@@ -3,7 +3,7 @@ VERSION := 0.2.7
 # use or not the GPU on the classical Raspberry Pi
 # USE_RPI_GPU_FFT = 1
 
-FLAGS = -Wall -Wno-misleading-indentation -O2 -ffast-math -g # -std=c++11 -O2 -ffast-math # -O3 ?
+FLAGS = -Wall -Wno-misleading-indentation -O2 # -ffast-math -g # -std=c++11 -O2 -ffast-math # -O3 ?
 LIBS  = -lpthread -lm -ljpeg -lconfig -lrt
 
 # FLAGS += -DNEW_RTLSDR_LIB
