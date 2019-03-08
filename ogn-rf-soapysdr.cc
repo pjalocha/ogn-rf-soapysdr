@@ -406,7 +406,9 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      printf(" BlockSize = %5.1f Ksamples = %5.3fms\n", BlockSize/1024.0, 1e3*BlockSize/DevSampleRate);
 
      int SliceSamples = (int)floor(DevSampleRate+0.5);                                              // [samples] decide on the Slice size
-     printf(" SliceSamples = %5.1f Ksamples = %5.3fms\n", SliceSamples/1024.0, 1e3*SliceSamples/DevSampleRate);
+     printf(" SliceSamples = %5.1f ksamples = %5.3fms\n", 1e-3*SliceSamples, 1e3*SliceSamples/DevSampleRate);
+     // printf(" SliceSamples = %5.1f ksamples = %5.3fms (SampleRate=%3.1fMsps)\n",
+     //        (double)SliceSamples/1024.0, 1e3*SliceSamples/DevSampleRate, 1e-6*DevSampleRate);
 
      // time(&StartTime); CountAllTimeSlots=0; CountLifeTimeSlots=0;
      // char Header[256];
@@ -416,7 +418,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
      RefDate += (uint32_t)floor(getTime());                                 // [sec] setup the reference time for getTime()
 
-     InpBuffer->Allocate(SliceSamples+2*BlockSize);                         // [samples] allocate with some margins
+     InpBuffer->Allocate(SliceSamples+4*BlockSize);                         // [samples] allocate with some margins
      InpBuffer->Len  = 1;                                                   // one value per sample
      InpBuffer->Full = 0;                                                   // buffer now empty
      InpBuffer->Rate = DevSampleRate;                                       // [Hz] rate reported by device
@@ -425,7 +427,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      InpBuffer->Time = getTime();                                           // [sec]
 
      int Timeout_usec = 50000+floor(8*1e6*BlockSize/DevSampleRate+0.5);        // [usec] (over) estimate the timeout
-     int ErrorCount=0;
+      int ErrorCount=0;
 
      double TimeDiffRMS=0; int TimeDiffCnt=0;
      uint32_t PrevSlotTime = 0;
@@ -444,8 +446,8 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
          int QueueSize=OutQueueCS16.Size();                                 // how many slices in the output queue ?
          if(TimeDiffCnt) { TimeDiffRMS/=TimeDiffCnt; }                      // [sec] average timestamp jitter
          printf("RF_Acq.Exec() ... %7.3fMHz @ %10.3fs: %5.3fs %7.3fMHz %5.3fMsps OutQueue: %2d+%d+%d %5.3fms (%2d)\n",
-                1e-6*CenterFreq, InpBuffer->Time, InpBuffer->Full/InpBuffer->Rate, 1e-6*InpBuffer->Freq, 1e-6*InpBuffer->Rate,
-                QueueSize, OutQueueCS16.ReuseSize(), OutQueueCS16.FloatSize(), 1e3*sqrt(TimeDiffRMS), TimeDiffCnt);
+                 1e-6*CenterFreq, InpBuffer->Time, InpBuffer->Full/InpBuffer->Rate, 1e-6*InpBuffer->Freq, 1e-6*InpBuffer->Rate,
+                 QueueSize, OutQueueCS16.ReuseSize(), OutQueueCS16.FloatSize(), 1e3*sqrt(TimeDiffRMS), TimeDiffCnt);
          TimeDiffRMS=0; TimeDiffCnt=0;
          if(OGN_SaveRawData>0)                                              // if request to save raw data
          { time_t Time=(time_t)floor(InpBuffer->Time)+InpBuffer->Date;
@@ -463,6 +465,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
          { NextInp = OutQueueCS16.New();
            NextInp->Allocate(*InpBuffer);
            NextInp->Time=EndTime;
+           NextInp->Full=0;
            OutQueueCS16.Push(InpBuffer);
            InpBuffer=NextInp; NextInp=0; }
          else                                                                  // or drop the slice, as the queue is too long
@@ -477,14 +480,15 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
        int Flags = 0; // SOAPY_SDR_ONE_PACKET;                                 //
        long long TimeNs = 0;                                                   // [ns] timestamp for receive buffer
        int BlockLen = SoapySDRDevice_readStream(SDR, Stream, Buffers, BlockSize, &Flags, &TimeNs, Timeout_usec); // read next SDR data batch
+       // printf("BlockLen = %6d/%8d / %d+%5.3fs\n", BlockLen, InpBuffer->Full, InpBuffer->Date, InpBuffer->Time);
        double Now=getTime();                                                   // [sec] get real-time just when the read completes
-       if(BlockLen==SOAPY_SDR_OVERFLOW)                                        //
+       if(BlockLen==SOAPY_SDR_OVERFLOW)                                        // if overflow error
        { printf("Overflow condition... some data is lost\n"); }
-       else if(BlockLen==SOAPY_SDR_TIMEOUT)                                    //
+       else if(BlockLen==SOAPY_SDR_TIMEOUT)                                    // if timeout error
        { printf("Timeout condition...\n"); }
-       else if(BlockLen<=0)                                                    //
+       else if(BlockLen<=0)                                                    // if other error or no data returned
        { printf("SDR.readStream() => %d => %s\n", BlockLen, SoapySDRDevice_lastError()); StopReq=1; break; }  // if error then break ?
-       if (BlockLen>0) { InpBuffer->Full += BlockLen; ErrorCount=0; }    // update the number of samples stored in the buffer
+       if (BlockLen>0) { InpBuffer->Full += BlockLen; ErrorCount=0; }          // update the number of samples stored in the buffer
                   else { InpBuffer->Full  = 0; ErrorCount++;
                          if(ErrorCount>=10) { StopReq=1; break; }
                        }
