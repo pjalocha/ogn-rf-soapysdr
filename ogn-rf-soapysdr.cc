@@ -96,15 +96,6 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
    char                    FilePrefix[16];
    int                     OGN_SaveRawData;
    // MessageQueue<Socket *>  RawDataQueue;               // sockets send to this queue should be written with a most recent raw data
-   MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
-   DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
-   int                     SpectrogramFFTsize;         // FFT size for the spectrogram
-   float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
-   SampleBuffer< std::complex<float> > SpectraBuffer;  //
-   SampleBuffer<float>     SpectraPwr;
-   float                   SpectraBkgNoise;
-   SampleBuffer<uint8_t>   Image;
-   JPEG                    JpegImage;
 
    // time_t                  StartTime;
    // uint32_t                CountAllTimeSlots;
@@ -116,11 +107,10 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
    RF_Acq() { RefDate = 0;
               Config_Defaults();
               // PulseBox.Preset(PulseBoxSize);
-              SpectrogramWindow=0; SpectraBkgNoise=128;
               // StartTime=0; CountAllTimeSlots=0; CountLifeTimeSlots=0;
               StopReq=0; Thr.setExec(ThreadExec); }
 
-  ~RF_Acq() { if(SpectrogramWindow) free(SpectrogramWindow); }
+  ~RF_Acq() { }
 
    double getTime(clockid_t RefClock=CLOCK_REALTIME) const // [sec] read the system time at this very moment
    { struct timespec now; clock_gettime(RefClock, &now); return (now.tv_sec-RefDate) + 1e-9*now.tv_nsec; }
@@ -149,7 +139,6 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      // PulseFilt.Threshold=0;
      // DeviceIndex=0;
      Serial[0]=0;
-     SpectrogramFFTsize=0;
      OGN_SaveRawData=0;
      FilePrefix[0]=0; }
 
@@ -213,12 +202,6 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
     config_lookup_float(Config, "RF.OGN.StartTime", &OGN_StartTime);
 
-    if(SpectrogramFFTsize==0) SpectrogramFFTsize=(8*SampleRate)/15625;               // 512 for 1Msps, 1024 for 2Msps sampling
-    SpectrogramFFTsize = 1<<(31-__builtin_clz(SpectrogramFFTsize));                  // round the FFTsize to the power-of-2
-    SpectrogramFFT.PresetForward(SpectrogramFFTsize);
-    SpectrogramWindow=(float *)realloc(SpectrogramWindow, SpectrogramFFTsize*sizeof(float));
-    SpectrogramFFT.SetSineWindow(SpectrogramWindow, SpectrogramFFTsize, (float)(1.0/sqrt(SpectrogramFFTsize)) );
-
     return 0; }
 
    static int ReadPosition(int &Latitude, int &Longitude, int &Altitude, config_t *Config)
@@ -281,7 +264,6 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
    void *Exec(void)
    { printf("RF_Acq.Exec() ... Start\n");
-     char Header[256];
      int Priority = Thr.getMaxPriority(SCHED_RR); Thr.setPriority(Priority, SCHED_RR);
      int CurrCenterFreq = calcCenterFreq(0);
 
@@ -463,25 +445,6 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
              printf("SaveRawData -> %s (%dsec)\n", FileName, OGN_SaveRawData);
              OGN_SaveRawData--; }
          }
-         if(SpectrogramQueue.Size())
-         { SlidingFFT(SpectraBuffer, *InpBuffer, SpectrogramFFT, SpectrogramWindow);
-           SpectraPower(SpectraPwr, SpectraBuffer);                                            // calc. spectra power
-           LogImage(Image, SpectraPwr, (float)SpectraBkgNoise, (float)32.0, (float)32.0);      // make the image
-           JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                  // and into JPEG
-           std::nth_element(SpectraPwr.Data, SpectraPwr.Data+SpectraPwr.Full/2, SpectraPwr.Data+SpectraPwr.Full);
-           SpectraBkgNoise=SpectraPwr.Data[SpectraPwr.Full/2];
-         }
-         while(SpectrogramQueue.Size())
-         { Socket *Client; SpectrogramQueue.Pop(Client);
-           // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
-           sprintf(Header, "HTTP/1.1 200 OK\r\n\
-Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
-Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\"\r\n\r\n",
-                   FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
-           Client->Send(Header);
-           Client->Send(JpegImage.Data, JpegImage.Size);
-           Client->SendShutdown(); Client->Close(); delete Client;
-         }
          if(QueueSize<8)                                                       // decide if push th enew slice into the outgoing queue
          { NextInp = OutQueueCS16.New();
            NextInp->Allocate(*InpBuffer);
@@ -577,26 +540,41 @@ template <class Float>
    TCP_DataServer DataServer;
    const static uint32_t OutPipeSync = 0x254F7D00 + sizeof(Float);
 
+   MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
+   DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
+   int                     SpectrogramFFTsize;         // FFT size for the spectrogram
+   float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
+   SampleBuffer< std::complex<float> > SpectraBuffer;  //
+   SampleBuffer<float>     SpectraPwr;
+   float                   SpectraBkgNoise;
+   SampleBuffer<uint8_t>   Image;
+   JPEG                    JpegImage;
+   char                    HTTPheader[256];
+
   public:
    Inp_FFT(RF_Acq *RF)
    { Window=0; this->RF=RF;
      RemoveDC=0;
      Preset();
+     SpectrogramWindow=0; SpectraBkgNoise=128;
      OutPipe=(-1);
      Config_Defaults(); }
 
   ~Inp_FFT()
    { Thr.Cancel();
+     if(SpectrogramWindow) free(SpectrogramWindow);
      if(Window) { free(Window); Window=0; } }
 
    void Config_Defaults(void)
-   { strcpy(OutPipeName, "ogn-rf.fifo"); }
+   { SpectrogramFFTsize=0;
+     strcpy(OutPipeName, "localhost:50010"); }
 
    int Config(config_t *Config)
-   { const char *PipeName = "ogn-rf.fifo";
+   { const char *PipeName = "localhost:50010";
      config_lookup_string(Config, "RF.PipeName",   &PipeName);
      config_lookup_int(Config, "RF.RemoveDC", &RemoveDC);
      strcpy(OutPipeName, PipeName);
+
      return 0; }
 
    int Preset(void) { return Preset(RF->SampleRate, RF->FFTsize); }       // preset for configured sampling rate
@@ -607,6 +585,13 @@ template <class Float>
      FFT.PresetForward(FFTsize);
      Window=(Float *)realloc(Window, FFTsize*sizeof(Float));
      FFT.SetSineWindow(Window, FFTsize, (Float)(1.0/sqrt(FFTsize)) );
+
+     if(SpectrogramFFTsize==0) SpectrogramFFTsize=(8*SampleRate)/15625;               // 512 for 1Msps, 1024 for 2Msps sampling
+     SpectrogramFFTsize = 1<<(31-__builtin_clz(SpectrogramFFTsize));                  // round the FFTsize to the power-of-2
+     SpectrogramFFT.PresetForward(SpectrogramFFTsize);
+     SpectrogramWindow=(float *)realloc(SpectrogramWindow, SpectrogramFFTsize*sizeof(float));
+     SpectrogramFFT.SetSineWindow(SpectrogramWindow, SpectrogramFFTsize, (float)(1.0/sqrt(SpectrogramFFTsize)) );
+
      return 1; }
 
   int SerializeSpectra(int OutPipe)                    // write spectra and other data into the pipe or socket
@@ -684,6 +669,27 @@ template <class Float>
        { SampleBuffer< std::complex<int16_t> > *InpBufferCS16 = RF->OutQueueCS16.Pop(); // here we wait for a new data batch
          // printf("Inp_FFT.Exec() ... (%5.3fMHz, %5.3fsec, %dsamples)\n", 1e-6*InpBuffer->Freq, InpBuffer->Time, InpBuffer->Full/2);
          SlidingFFT(Spectra, *InpBufferCS16, FFT, Window);  // Process input samples, produce FFT spectra
+
+         if(SpectrogramQueue.Size())
+         { SlidingFFT(SpectraBuffer, *InpBufferCS16, SpectrogramFFT, SpectrogramWindow);
+           SpectraPower(SpectraPwr, SpectraBuffer);                                            // calc. spectra power
+           LogImage(Image, SpectraPwr, (float)SpectraBkgNoise, (float)32.0, (float)32.0);      // make the image
+           JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                  // and into JPEG
+           std::nth_element(SpectraPwr.Data, SpectraPwr.Data+SpectraPwr.Full/2, SpectraPwr.Data+SpectraPwr.Full);
+           SpectraBkgNoise=SpectraPwr.Data[SpectraPwr.Full/2];
+         }
+         while(SpectrogramQueue.Size())
+         { Socket *Client; SpectrogramQueue.Pop(Client);
+           // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
+           sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
+Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
+Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\"\r\n\r\n",
+                   RF->FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
+           Client->Send(HTTPheader);
+           Client->Send(JpegImage.Data, JpegImage.Size);
+           Client->SendShutdown(); Client->Close(); delete Client;
+         }
+
          RF->OutQueueCS16.Recycle(InpBufferCS16);
          if(RemoveDC) RemoveDCbias(Spectra, (RemoveDC|1)/2);
          WriteToPipe(); // here we send the FFT spectra in Spectra to the demodulator
@@ -818,7 +824,7 @@ template <class Float>
      else if( (strcmp(File, "/status.html")==0)         || (strcmp(File, "status.html")==0) )
      { Status(Client); return; }
      else if( (strcmp(File, "/spectrogram.jpg")==0) || (strcmp(File, "spectrogram.jpg")==0) )
-     { RF->SpectrogramQueue.Push(Client); return; }
+     { OGN->SpectrogramQueue.Push(Client); return; }
      // else if( (strcmp(File, "/time-slot-rf.u8")==0)  || (strcmp(File, "time-slot-rf.u8")==0) )
      // { RF->RawDataQueue.Push(Client); return; }
      // NotFound:
