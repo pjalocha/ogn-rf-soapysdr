@@ -685,8 +685,8 @@ template <class Float>
            sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
 Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
 Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.jpg\"\r\n\r\n",
-                   RF->FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2,
-                   SpectraBuffer.Len, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
+                   RF->FilePrefix, 1e-6*SpectraPwr.Freq, 1e-6*SpectraPwr.Rate*SpectraPwr.Len/2,
+                   SpectraPwr.Len, (uint32_t)floor(SpectraPwr.Date+SpectraPwr.Time));
            Client->Send(HTTPheader);
            Client->Send(JpegImage.Data, JpegImage.Size);
            Client->SendShutdown(); Client->Close(); delete Client;
@@ -709,8 +709,8 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.
            sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
 Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
 Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.jpg\"\r\n\r\n",
-                   RF->FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2,
-                   SpectraBuffer.Len, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
+                   RF->FilePrefix, 1e-6*SpectraPwr.Freq, 1e-6*SpectraPwr.Rate*SpectraPwr.Len/2,
+                   SpectraPwr.Len, (uint32_t)floor(SpectraPwr.Date+SpectraPwr.Time));
            Client->Send(HTTPheader);
            Client->Send(JpegImage.Data, JpegImage.Size);
            Client->SendShutdown(); Client->Close(); delete Client;
@@ -940,11 +940,13 @@ Refresh: 5\r\n\
      dprintf(Client->SocketFile, "<tr><th>RF</th><th></th></tr>\n");
      if(RF->OGN_CenterFreq==0)
        dprintf(Client->SocketFile, "<tr><td>RF.FreqPlan</td><td align=right><b>%d: %s</b></td></tr>\n",   RF->HoppingPlan.Plan, RF->HoppingPlan.getPlanName() );
-     // dprintf(Client->SocketFile, "<tr><td>RF.Device</td><td align=right><b>%d</b></td></tr>\n",                       RF->DeviceIndex);
+     dprintf(Client->SocketFile, "<tr><td>RF.Driver</td><td align=right><b>%s</b></td></tr>\n",           RF->Driver);
+     dprintf(Client->SocketFile, "<tr><td>RF.Antenna</td><td align=right><b>%s</b></td></tr>\n",           RF->Antenna);
      // if(RF->DeviceSerial[0])
      //   dprintf(Client->SocketFile, "<tr><td>RF.DeviceSerial</td><td align=right><b>%s</b></td></tr>\n",               RF->DeviceSerial);
-     dprintf(Client->SocketFile, "<tr><td>RF.SampleRate</td><td align=right><b>%3.1f MHz</b></td></tr>\n",       1e-6*RF->SampleRate);
-     // dprintf(Client->SocketFile, "<tr><td>RF.PipeName</td><td align=right><b>%s</b></td></tr>\n",                  ??->OutPipeName );
+     dprintf(Client->SocketFile, "<tr><td>RF.SampleRate</td><td align=right><b>%5.3f MHz</b></td></tr>\n",       1e-6*RF->SampleRate);
+     dprintf(Client->SocketFile, "<tr><td>RF.Bandwidth</td><td align=right><b>%5.3f MHz</b></td></tr>\n",       1e-6*RF->Bandwidth);
+     dprintf(Client->SocketFile, "<tr><td>RF.PipeName</td><td align=right><b>%s</b></td></tr>\n",                  OGN->OutPipeName );
      dprintf(Client->SocketFile, "<tr><td>RF.FreqCorr</td><td align=right><b>%+4.1f ppm</b></td></tr>\n",             RF->FreqCorr);
      // if(RF->FreqRaster)
      //   dprintf(Client->SocketFile, "<tr><td>RF.FreqRaster</td><td align=right><b>%3d Hz</b></td></tr>\n",          RF->FreqRaster);
