@@ -382,7 +382,7 @@ class RPI_GPU_FFT
      { if(Size==(1<<LogN)) break; }
      if(LogN>22) return -1;
      int Err=gpu_fft_prepare(MailBox, LogN, Sign, Jobs, &FFT);
-     if(Err<0) { FFT=0; Size=0; return Err; } // -1 => firmware up todate ?, -2 => Size not supported ?, -3 => not enough GPU memory
+     if(Err<0) { FFT=0; Size=0; return Err; } // -1 => firmware not up to date ?, -2 => Size not supported ?, -3 => not enough GPU memory
      this->Size=Size; this->Sign=Sign; this->Jobs=Jobs; return Size; }
 
    int PresetForward (int Size, int Jobs=32) { return Preset(Size, GPU_FFT_FWD, Jobs); }
@@ -397,6 +397,126 @@ class RPI_GPU_FFT
   { for(int Idx=0; Idx<WindowSize; Idx++)
     { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
   }
+
+} ;
+
+#endif
+
+// ===========================================================================================
+
+#ifdef USE_CLFFT     // clFFT based on OpenCL
+
+#include <clFFT.h>
+
+class clFFT
+{ public:
+
+   int              Size;
+   size_t           Jobs;
+
+   cl_int           Error;
+   cl_platform_id   Platform;
+   cl_device_id     Device;
+   cl_context       Context;
+   cl_command_queue Queue;
+   clfftSetupData   Setup;
+   clfftPlanHandle  Plan;
+
+   cl_mem               ProcBuff;
+   cl_mem               TmpBuff;
+   std::complex<float> *MemBuff;
+
+  public:
+   clFFT()
+   { Size=0; Jobs=32;
+     MemBuff=0; TmpBuff=0; ProcBuff=0;
+     Platform=0; Device=0; Context=0;
+     Error  = clGetPlatformIDs(1, &Platform, 0);                           if(Error!=CL_SUCCESS) return;
+     Error  = clGetDeviceIDs(Platform, CL_DEVICE_TYPE_GPU, 1, &Device, 0); if(Error!=CL_SUCCESS) return;
+     Context= clCreateContext(0, 1, &Device, 0, 0, &Error);                if(Context==0) return;
+     if(clFFTsetup()!=CL_SUCCESS) Context=0;
+   }
+
+   cl_int clFFTsetup(void)
+   { Queue  = clCreateCommandQueue(Context, Device, 0, &Error);            if(Error!=CL_SUCCESS) return -2;
+     Error  = clfftInitSetupData(&Setup);                                  if(Error!=CL_SUCCESS) return -2;
+     Error  = clfftSetup(&Setup);                                          if(Error!=CL_SUCCESS) return -2;
+     return Error; }
+
+  ~clFFT()
+   { Free();
+     if(Context)
+     { clfftTeardown();
+       clReleaseCommandQueue(Queue);
+       clReleaseContext(Context);
+       Context=0; }
+   }
+
+   void Free(void)
+   { if(Size==0) return;
+     clfftDestroyPlan(&Plan);
+     if(ProcBuff)  { clReleaseMemObject(ProcBuff); ProcBuff =0; }
+     if(TmpBuff)  { clReleaseMemObject(TmpBuff); TmpBuff=0; }
+     if(MemBuff) { free(MemBuff); MemBuff=0; }
+     Size=0; }
+
+   int Preset(int Size, size_t Jobs=32)
+   { if(Context==0) return -2;
+     if( (Size==this->Size) && (Jobs==this->Jobs) ) return Size;
+     Free();
+     if(Size<256) return -1;
+     int LogN;
+     for(LogN=8; LogN<=22; LogN++)
+     { if(Size==(1<<LogN)) break; }
+     if(LogN>22) return -1;
+
+     clfftDim Dim = CLFFT_1D;
+     size_t Len[1] = { (size_t)Size };
+     Error = clfftCreateDefaultPlan(&Plan, Context, Dim, Len);             if(Error!=CL_SUCCESS) return -2;
+
+     Error = clfftSetPlanPrecision (Plan, CLFFT_SINGLE);                   if(Error!=CL_SUCCESS) return -2;
+     Error = clfftSetLayout        (Plan, CLFFT_COMPLEX_INTERLEAVED, CLFFT_COMPLEX_INTERLEAVED); if(Error!=CL_SUCCESS) return -2;
+     Error = clfftSetResultLocation(Plan, CLFFT_INPLACE);                  if(Error!=CL_SUCCESS) return -2;
+     Error = clfftSetPlanBatchSize (Plan, Jobs);                           if(Error!=CL_SUCCESS) return -2;
+     Error = clfftBakePlan         (Plan, 1, &Queue, 0, 0);                if(Error!=CL_SUCCESS) return -2;
+
+     size_t TmpBuffSize=0;
+     cl_int Stat = clfftGetTmpBufSize(Plan, &TmpBuffSize);
+     if ((Stat==0) && (TmpBuffSize>0))
+     { TmpBuff = clCreateBuffer(Context, CL_MEM_READ_WRITE, TmpBuffSize, 0, &Error);
+       if (Error!=CL_SUCCESS) return -2;
+     }
+     ProcBuff = clCreateBuffer(Context, CL_MEM_READ_WRITE, 2*Jobs*Size*sizeof(cl_float), 0, &Error );
+     if(Error!=CL_SUCCESS) return -2;
+     MemBuff = (std::complex<float> *)malloc(Jobs*Size*sizeof(std::complex<float>));
+     if(MemBuff==0) return -2;
+
+     this->Size=Size; this->Jobs=Jobs; return Size; }
+
+   std::complex<float> *Input (int Job=0) { return (std::complex<float> *)(MemBuff + Job*Size); }
+   std::complex<float> *Output(int Job=0) { return (std::complex<float> *)(MemBuff + Job*Size); }
+   int ExecuteForward(void)
+   { Error = clEnqueueWriteBuffer(Queue, ProcBuff, CL_TRUE, 0, Jobs*Size*sizeof(std::complex<float>), MemBuff, 0, 0, 0 );
+     if(Error!=CL_SUCCESS) return -2;
+     Error = clfftEnqueueTransform(Plan, CLFFT_FORWARD, 1, &Queue, 0, 0, 0, &ProcBuff, 0, 0);
+     if(Error!=CL_SUCCESS) return -2;
+     Error = clEnqueueReadBuffer (Queue, ProcBuff, CL_TRUE, 0, Jobs*Size*sizeof(std::complex<float>), MemBuff, 0, 0, 0 );
+     if(Error!=CL_SUCCESS) return -2;
+     return 0; }
+   int ExecuteBackward(void)
+   { Error = clEnqueueWriteBuffer(Queue, ProcBuff, CL_TRUE, 0, Jobs*Size*sizeof(std::complex<float>), MemBuff, 0, 0, 0 );
+     if(Error!=CL_SUCCESS) return -2;
+     Error = clfftEnqueueTransform(Plan, CLFFT_BACKWARD, 1, &Queue, 0, 0, 0, &ProcBuff, 0, 0);
+     if(Error!=CL_SUCCESS) return -2;
+     Error = clEnqueueReadBuffer (Queue, ProcBuff, CL_TRUE, 0, Jobs*Size*sizeof(std::complex<float>), MemBuff, 0, 0, 0 );
+     if(Error!=CL_SUCCESS) return -2;
+     return 0; }
+
+   template <class Type>
+    static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
+    { for(int Idx=0; Idx<WindowSize; Idx++)
+      { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
+    }
 
 } ;
 

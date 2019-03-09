@@ -1,7 +1,10 @@
 VERSION := 0.2.7
 
-# use or not the GPU on the classical Raspberry Pi
+# use the GPU on the classical Raspberry Pi
 # USE_RPI_GPU_FFT = 1
+
+# use the GPU through the cfFFT OpenCL library
+# USE_CLFFT = 1
 
 FLAGS = -Wall -Wno-misleading-indentation -O2 # -ffast-math -g # -std=c++11 -O2 -ffast-math # -O3 ?
 LIBS  = -lpthread -lm -ljpeg -lconfig -lrt
@@ -46,6 +49,11 @@ ARCH = RPI-GPU
 GPU_FLAGS = -DUSE_RPI_GPU_FFT
 GPU_SRC   = mailbox.c gpu_fft.c gpu_fft_base.c gpu_fft_twiddles.c gpu_fft_shaders.c
 LIBS += -ldl
+endif
+
+ifdef USE_CLFFT
+GPU_FLAGS = -DUSE_CLFFT
+LIBS += -lOpenCL -lclFFT
 endif
 
 FLAGS += -DVERSION=$(VERSION).$(ARCH)

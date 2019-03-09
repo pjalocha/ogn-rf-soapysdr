@@ -528,6 +528,8 @@ template <class Float>
    // int              FFTsize;
 #ifdef USE_RPI_GPU_FFT
    RPI_GPU_FFT      FFT;
+#elif USE_CLFFT
+   clFFT            FFT;
 #else
    DFT1d<Float>     FFT;
 #endif
@@ -583,7 +585,11 @@ template <class Float>
    int Preset(int SampleRate, int FFTsize=0)                 // preset for given RF sampling rate
    { if(FFTsize==0) FFTsize=(8*8*SampleRate)/15625;
      FFTsize = 1<<(31-__builtin_clz(FFTsize));               // round the FFTsize to the power-of-2
+#ifdef USE_CLFFT
+     FFT.Preset(FFTsize);
+#else
      FFT.PresetForward(FFTsize);
+#endif
      Window=(Float *)realloc(Window, FFTsize*sizeof(Float));
      FFT.SetSineWindow(Window, FFTsize, (Float)(1.0/sqrt(FFTsize)) );
 

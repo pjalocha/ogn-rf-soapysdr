@@ -48,15 +48,15 @@ template <class Type>
        double   Rate;   // [Hz]  sampling rate
        double   Time;   // [sec] time when samples were acquired
        uint32_t Date;   // [sec] integer part of Time to keep precision
-       uint32_t Index;  // Sample index/counter
-       float BkgNoise;  // Estimate of the background noise
+       // uint32_t Index;  // Sample index/counter
+       // float BkgNoise;
      } ;
    } ;
 
    Type  *Data;     // (allocated) storage
 
   public:
-   SampleBuffer() { Size=0; Data=0; Full=0; Len=1; RxID=0; Freq=0; Rate=0; Time=0; Date=0; Index=0; BkgNoise=0; }
+   SampleBuffer() { Size=0; Data=0; Full=0; Len=1; RxID=0; Freq=0; Rate=0; Time=0; Date=0; }
   ~SampleBuffer() { Free(); }
 
    void Print(void) const
@@ -71,17 +71,16 @@ template <class Type>
      Data = new (std::nothrow) Type [NewSize]; if(Data==0) { Size=0; Full=0; return Size; }
      Size=NewSize; return Size; }
 */
-   void Free(void) { if(Data) free(Data); Data=0; Size=0; }
+   void Free(void) { if(Data) free(Data); Data=0; Size=0; Full=0; }
 
    int Allocate(int NewSize)
-   { if(NewSize<=Size) { return Size; } // for eficiency: do not reallocate if same or bigger size already allocated
-     // printf("SampleBuffer::Allocate(%d*%d) Size=%d*%d/%d %s\n", NewSize, sizeof(Type), Size, sizeof(Type), Len, Data?" -> ":"NULL");
+   { if(NewSize<=Size) { Full=0; return Size; } // for timing eficiency: do not reallocate if same or bigger size already allocated
      Free();
      Data = (Type *)malloc(NewSize*sizeof(Type)); if(Data==0) { Size=0; return Size; }
      Size=NewSize; return Size; }
 
    int Allocate(int NewLen, int Samples)
-   { Len=NewLen; Allocate(NewLen*Samples); return Size; }
+   { Allocate(NewLen*Samples); Len=NewLen; return Size; }
 
    int Samples(void) const { return Full/Len; }                // number of samples
    Type *SamplePtr(int Idx) const { return Data+Idx*Len; }     // pointer to an indexed sample
@@ -109,11 +108,10 @@ template <class Type>
      return Sum/Full; }
 
    void Crop(int Head, int Tail)                              // crop the buffer itself
-   { int32_t NewFull = Full-(Head+Tail)*Len;                  // size of data after the crop
+   { int NewFull = Full-(Head+Tail)*Len;                      // size of data after the crop
      if(Head)                                                 // if we are to crop from the head
      { memmove(Data, Data+Head*Len, NewFull*sizeof(Type));    // copy/move the data
-       Time += Head/Rate;                                     // advance the Time
-       Index += Head; }
+       Time += Head/Rate; }                                   // advance the Time
      Full=NewFull; }
 
    void Crop(SampleBuffer<Type> &Out, int Head, int Tail)     // copy part of the buffer into a new buffer
@@ -121,9 +119,7 @@ template <class Type>
      int NewFull=Full-(Head+Tail)*Len;
      memmove(Out.Data, Data+Head*Len, NewFull*sizeof(Type));
      Out.Time = Time+Head/Rate;
-     Out.Full = NewFull;
-     Out.Index = Index+Head;
-     Out.BkgNoise = BkgNoise; }
+     Out.Full = NewFull; }
 
    int Copy(const SampleBuffer<Type> &Buffer)                   // allocate and copy from another SampleBuffer
    { Allocate(Buffer); memcpy(Data, Buffer.Data, Buffer.Full*sizeof(Type)); Full=Buffer.Full; return Full; }
@@ -178,9 +174,6 @@ template <class Type>
   template <class StreamType>
    int Serialize(StreamType File) // write SampleBuffer to a file/socket
    { int Total=0, Bytes;
-     Bytes=Serialize_WriteData(File, Header, HeaderSize*sizeof(uint32_t)); if(Bytes<0) return -1;
-     Total+=Bytes;
-/*
      Bytes=Serialize_WriteData(File, &Size, sizeof(int32_t)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_WriteData(File, &Full, sizeof(int32_t)); if(Bytes<0) return -1;
@@ -189,35 +182,20 @@ template <class Type>
      Total+=Bytes;
      Bytes=Serialize_WriteData(File, &Rate, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
-     Bytes=Serialize_WriteData(File, &Date, sizeof(uint32_t)); if(Bytes<0) return -1;
-     Total+=Bytes;
-     Bytes=Serialize_WriteData(File, &Time, sizeof(double)); if(Bytes<0) return -1;
+     double FullTime=Time+Date;
+     Bytes=Serialize_WriteData(File, &FullTime, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_WriteData(File, &RxID, sizeof(uint32_t)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_WriteData(File, &Freq, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
-*/
      Bytes=Serialize_WriteData(File,  Data, Full*sizeof(Type)); if(Bytes<0) return -1;
      Total+=Bytes;
      return Total; }
 
   template <class StreamType>
    int Deserialize(StreamType File)  // read SampleBuffer from a file/socket
-   { int Total=0, Bytes; int32_t OldSize=Size;
-     Bytes=Serialize_ReadData(File, Header, HeaderSize*sizeof(uint32_t));
-     int32_t NewSize=Size; Size=OldSize;
-     int32_t NewFull=Full;
-     if(Bytes<0) { Full=0; return -1; }
-     // printf("SampleBuffer::Deserialize() => %d, Size=%d, NewSize=%d, Full=%d\n", Bytes, Size, NewSize, Full);
-     if( (NewSize<0) || (NewSize<Full) ) { Full=0; return -1; }
-     Total+=Bytes;
-     if(Allocate(NewSize)==0) return -2;
-     // printf("SampleBuffer::Deserialize() Size=%d, NewSize=%d, Full=%d\n", Size, NewSize, Full);
-     Bytes=Serialize_ReadData(File,  Data, NewFull*sizeof(Type)); if(Bytes<0) return -1;
-     Full=NewFull;
-     Total+=Bytes;
-/*
+   { int Total=0, Bytes;
      int32_t NewSize=0;
      Bytes=Serialize_ReadData(File, &NewSize, sizeof(int32_t)); if(Bytes<0) return -1;
      if(NewSize<0) return -1;
@@ -229,52 +207,41 @@ template <class Type>
      Total+=Bytes;
      Bytes=Serialize_ReadData(File, &Rate, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
-     Bytes=Serialize_ReadData(File, &Date, sizeof(uint32_t)); if(Bytes<0) return -1;
-     Total+=Bytes;
      Bytes=Serialize_ReadData(File, &Time, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
+     Date=(uint32_t)floor(Time); Time-=Date;
      Bytes=Serialize_ReadData(File, &RxID, sizeof(uint32_t)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_ReadData(File, &Freq, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_ReadData(File,  Data, Full*sizeof(Type)); if(Bytes<0) return -1;
      Total+=Bytes;
-*/
      return Total; }
 
    int Write(FILE *File) // write all samples onto a binary file (with header)
-   { if(fwrite(Header, HeaderSize*sizeof(uint32_t), 1, File)!=1) return -1;
-/*
-     if(fwrite(&Size, sizeof(Size), 1, File)!=1) return -1;
+   { if(fwrite(&Size, sizeof(Size), 1, File)!=1) return -1;
      if(fwrite(&Full, sizeof(Full), 1, File)!=1) return -1;
      if(fwrite(&Len,  sizeof(Len),  1, File)!=1) return -1;
      if(fwrite(&Rate, sizeof(Rate), 1, File)!=1) return -1;
-     if(fwrite(&Date, sizeof(Date), 1, File)!=1) return -1;
-     if(fwrite(&Time, sizeof(Time), 1, File)!=1) return -1;
+     double FullTime=Time+Date;
+     if(fwrite(&FullTime, sizeof(FullTime), 1, File)!=1) return -1;
+     // if(fwrite(&Time, sizeof(Time), 1, File)!=1) return -1;
      if(fwrite(&RxID, sizeof(RxID), 1, File)!=1) return -1;
      if(fwrite(&Freq, sizeof(Freq), 1, File)!=1) return -1;
-*/
      if(fwrite(Data,  sizeof(Type), Size, File)!=(size_t)Size) return -1;
      return 1; }
 
    int Read(FILE *File) // read samples from a binary file (with header)
-   { int32_t OldSize=Size;
-     if(fread(Header, HeaderSize*sizeof(uint32_t), 1, File)!=1) return -1;
-     int32_t NewSize=Size; Size=OldSize;
-     int32_t NewFull=Full;
-/*
-     if(fread(&Size, sizeof(Size), 1, File)!=1) return -1;
+   { if(fread(&Size, sizeof(Size), 1, File)!=1) return -1;
      if(fread(&Full, sizeof(Full), 1, File)!=1) return -1;
      if(fread(&Len,  sizeof(Len),  1, File)!=1) return -1;
      if(fread(&Rate, sizeof(Rate), 1, File)!=1) return -1;
-     if(fread(&Date, sizeof(Date), 1, File)!=1) return -1;
      if(fread(&Time, sizeof(Time), 1, File)!=1) return -1;
+     Date=(uint32_t)floor(Time); Time-=Date;
      if(fread(&RxID, sizeof(RxID), 1, File)!=1) return -1;
      if(fread(&Freq, sizeof(Freq), 1, File)!=1) return -1;
-*/
-     Allocate(NewSize);
-     if(fread(Data,  sizeof(Type), NewSize, File)!=(size_t)Size) return -1;
-     Size=NewSize; Full=NewFull;
+     Allocate(Size);
+     if(fread(Data,  sizeof(Type), Size, File)!=(size_t)Size) return -1;
      return 1; }
 
    int ReadRaw(FILE *File, int Len, int MaxSamples, double Rate=1) // read samples from a raw binary file
@@ -300,17 +267,6 @@ template <class Type>
 
 // Note 1: the sliding FFT routines below take sliding step = half the FFT window size (thus SineWindow should be used)
 // Note 2: the FFT output spectra have the two halfs swapped around thus the FFT amplitude corresponding to the center frequency is in the middle
-
-template <class Float>
- int SlidingFFT(SampleBuffer< std::complex<Float> > &Output, const SampleBuffer< std::complex<uint8_t> > &Input,
-                InpSlideFFT<Float> &FFT, Float InpBias=127.38)
-{ return SlidingFFT(Output, Input, FFT.FwdFFT, FFT.Window, InpBias); }
-
-template <class Float> // do sliding FFT over a buffer of (complex 8-bit) samples, produce (float/double complex) spectra
- int SlidingFFT(SampleBuffer< std::complex<Float> > &Output, const SampleBuffer< std::complex<uint8_t> >&Input,
-                DFT1d<Float> &FwdFFT, Float *Window, Float InpBias=127.38)
-{ 
-  return 0; }
 
 template <class Float>
  int SlidingFFT(SampleBuffer< std::complex<Float> > &Output, const SampleBuffer<uint8_t> &Input,
@@ -789,6 +745,121 @@ template <class Float> // do sliding FFT over a buffer of float/double complex s
   return Slides; }
 
 #endif
+
+// ==================================================================================================
+
+#ifdef USE_CLFFT
+
+// template <class Float> // do sliding FFT over a buffer of (complex 8-bit) samples, produce (float/double complex) spectra
+ int SlidingFFT(SampleBuffer< std::complex<float> > &Output, const SampleBuffer<uint8_t> &Input,
+                clFFT &FwdFFT, float *Window, float InpBias=127.38)
+{ int Jobs = FwdFFT.Jobs;
+  int WindowSize = FwdFFT.Size;                                                        // FFT object and Window shape are prepared already
+  int WindowSize2=WindowSize/2;                                                          // Slide step
+  int InpSamples=Input.Full/2;                                                         // number of complex,8-bit input samples
+  // printf("SlidingFFT(clFFT) %d point FFT, %d jobs/GPU, %d input samples\n", FwdFFT.Size, Jobs, InpSamples);
+  Output.Allocate((InpSamples/WindowSize2+1)*WindowSize); Output.Len=WindowSize;         // output is rows of spectral data
+  Output.Rate = Input.Rate/WindowSize2;
+  Output.Time = Input.Time;
+  Output.Date = Input.Date;
+  Output.RxID = Input.RxID;
+  Output.Freq = Input.Freq;
+  uint8_t *InpData = Input.Data;
+  std::complex<float> *OutData = Output.Data;
+  int Slides=0; int Job=0;
+  { std::complex<float> *Buffer = FwdFFT.Input(Job);                // first slide is special
+    for( int Bin=0; Bin<WindowSize2; Bin++) { Buffer[Bin] = 0; }    // half the window is empty
+    for( int Bin=WindowSize2; Bin<WindowSize; Bin++)                // the other half contains the first input samples
+    { Buffer[Bin] = std::complex<float>( Window[Bin]*(InpData[0]-InpBias), Window[Bin]*(InpData[1]-InpBias) );
+      InpData+=2; }
+    Job++; InpData-=2*WindowSize2; }
+  for( ; InpSamples>=WindowSize; InpSamples-=WindowSize2)           // now the following slides
+  { std::complex<float> *Buffer = FwdFFT.Input(Job);
+    for( int Bin=0; Bin<WindowSize; Bin++)
+    { Buffer[Bin] = std::complex<float>( Window[Bin]*(InpData[0]-InpBias), Window[Bin]*(InpData[1]-InpBias) );
+      InpData+=2; }
+    Job++; InpData-=2*WindowSize2;
+    if(Job>=Jobs)
+    { FwdFFT.ExecuteForward();
+      for(int J=0; J<Jobs; J++)
+      { memcpy(OutData, FwdFFT.Output(J)+WindowSize2, WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2;
+        memcpy(OutData, FwdFFT.Output(J),             WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2; }
+      Slides+=Jobs; Job=0;
+    }
+  }
+  { std::complex<float> *Buffer = FwdFFT.Input(Job);                  // and the last slide: special
+    for( int Bin=0; Bin<WindowSize2; Bin++)
+    { Buffer[Bin] = std::complex<float>( Window[Bin]*(InpData[0]-InpBias), Window[Bin]*(InpData[1]-InpBias));
+      InpData+=2; }
+    for( int Bin=WindowSize2; Bin<WindowSize; Bin++)
+    { Buffer[Bin] = 0; }
+    Job++; InpData-=2*WindowSize2;
+    { FwdFFT.ExecuteForward();
+      for(int J=0; J<Job; J++)
+      { memcpy(OutData, FwdFFT.Output(J)+WindowSize2, WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2;
+        memcpy(OutData, FwdFFT.Output(J),             WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2; }
+      Slides+=Job; Job=0;
+    }
+  }
+
+  // printf("SlidingFFT(CLFFT) %d slides\n", Slides);
+  Output.Full=Slides*WindowSize;
+  return Slides; }
+
+  template <class InpType> // do sliding FFT over a buffer of (int16_t/float) samples, produce (float complex) spectra
+   int SlidingFFT(SampleBuffer< std::complex<float> > &Output, const SampleBuffer< std::complex<InpType> > &Input,
+                  clFFT &FwdFFT, float *Window)
+  { int Jobs = FwdFFT.Jobs;
+    int WindowSize = FwdFFT.Size;                                                        // FFT object and Window shape are prepared already
+    int WindowSize2=WindowSize/2;                                                          // Slide step
+    int InpSamples=Input.Full/2;                                                         // number of complex,8-bit input samples
+    // printf("SlidingFFT(clFFT) %d point FFT, %d jobs/GPU, %d input samples\n", FwdFFT.Size, Jobs, InpSamples);
+    Output.Allocate((InpSamples/WindowSize2+1)*WindowSize); Output.Len=WindowSize;         // output is rows of spectral data
+    Output.Rate = Input.Rate/WindowSize2;
+    Output.Time = Input.Time;
+    Output.Date = Input.Date;
+    Output.RxID = Input.RxID;
+    Output.Freq = Input.Freq;
+    std::complex<InpType> *InpData = Input.Data;
+    std::complex<float> *OutData = Output.Data;
+    int Slides=0; int Job=0;
+    { std::complex<float> *Buffer = FwdFFT.Input(Job);                // first slide is special
+      for( int Bin=0; Bin<WindowSize2; Bin++) { Buffer[Bin] = 0; }    // half the window is empty
+      for( int Bin=WindowSize2; Bin<WindowSize; Bin++)                // the other half contains the first input samples
+      { Buffer[Bin] = std::complex<float>(Window[Bin]*InpData[Bin-WindowSize2].real(), Window[Bin]*InpData[Bin-WindowSize2].imag()); }
+      Job++; InpData-=WindowSize2; }
+    for( ; InpSamples>=WindowSize; InpSamples-=WindowSize2)           // now the following slides
+    { std::complex<float> *Buffer = FwdFFT.Input(Job);
+      for( int Bin=0; Bin<WindowSize; Bin++)
+      { Buffer[Bin] = std::complex<float>(Window[Bin]*InpData[Bin].real(), Window[Bin]*InpData[Bin].imag()); }
+      Job++; InpData-=WindowSize2;
+      if(Job>=Jobs)
+      { FwdFFT.ExecuteForward();
+        for(int J=0; J<Jobs; J++)
+        { memcpy(OutData, FwdFFT.Output(J)+WindowSize2, WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2;
+          memcpy(OutData, FwdFFT.Output(J),             WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2; }
+        Slides+=Jobs; Job=0;
+      }
+    }
+    { std::complex<float> *Buffer = FwdFFT.Input(Job);                  // and the last slide: special
+      for( int Bin=0; Bin<WindowSize2; Bin++)
+      { Buffer[Bin] = std::complex<float>(Window[Bin]*InpData[Bin].real(), Window[Bin]*InpData[Bin].imag()); }
+      for( int Bin=WindowSize2; Bin<WindowSize; Bin++)
+      { Buffer[Bin] = 0; }
+      Job++; InpData-=WindowSize2;
+      { FwdFFT.ExecuteForward();
+        for(int J=0; J<Job; J++)
+        { memcpy(OutData, FwdFFT.Output(J)+WindowSize2, WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2;
+          memcpy(OutData, FwdFFT.Output(J),             WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2; }
+        Slides+=Job; Job=0;
+      }
+    }
+
+    // printf("SlidingFFT(CLFFT) %d slides\n", Slides);
+    Output.Full=Slides*WindowSize;
+    return Slides; }
+
+#endif // USE_CLFFT
 
 // ==================================================================================================
 
