@@ -541,6 +541,7 @@ template <class Float>
    const static uint32_t OutPipeSync = 0x254F7D00 + sizeof(Float);
 
    MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
+   MessageQueue<Socket *>  WideSpectrogramQueue;        // sockets send to this queue should be written with a most recent spectrogram
    DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
    int                     SpectrogramFFTsize;         // FFT size for the spectrogram
    float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
@@ -683,8 +684,9 @@ template <class Float>
            // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
            sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
 Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
-Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\"\r\n\r\n",
-                   RF->FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
+Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.jpg\"\r\n\r\n",
+                   RF->FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2,
+                   SpectraBuffer.Len, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
            Client->Send(HTTPheader);
            Client->Send(JpegImage.Data, JpegImage.Size);
            Client->SendShutdown(); Client->Close(); delete Client;
@@ -693,6 +695,26 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\
          RF->OutQueueCS16.Recycle(InpBufferCS16);
          if(RemoveDC) RemoveDCbias(Spectra, (RemoveDC|1)/2);
          WriteToPipe(); // here we send the FFT spectra in Spectra to the demodulator
+
+         if(WideSpectrogramQueue.Size())
+         { SpectraPower(SpectraPwr, Spectra);                                                  // calc. spectra power
+           LogImage(Image, SpectraPwr, (float)SpectraBkgNoise, (float)32.0, (float)32.0);      // make the image
+           JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                  // and into JPEG
+           std::nth_element(SpectraPwr.Data, SpectraPwr.Data+SpectraPwr.Full/2, SpectraPwr.Data+SpectraPwr.Full);
+           SpectraBkgNoise=SpectraPwr.Data[SpectraPwr.Full/2];
+         }
+         while(WideSpectrogramQueue.Size())
+         { Socket *Client; WideSpectrogramQueue.Pop(Client);
+           // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
+           sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
+Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
+Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.jpg\"\r\n\r\n",
+                   RF->FilePrefix, 1e-6*SpectraBuffer.Freq, 1e-6*SpectraBuffer.Rate*SpectraBuffer.Len/2,
+                   SpectraBuffer.Len, (uint32_t)floor(SpectraBuffer.Date+SpectraBuffer.Time));
+           Client->Send(HTTPheader);
+           Client->Send(JpegImage.Data, JpegImage.Size);
+           Client->SendShutdown(); Client->Close(); delete Client;
+         }
        }
 /*
        else if(RF->OutQueueCU8.Size())
@@ -821,10 +843,12 @@ template <class Float>
 
           if(strcmp(File, "/")==0)
      { Status(Client); return; }
-     else if( (strcmp(File, "/status.html")==0)         || (strcmp(File, "status.html")==0) )
+     else if( (strcasecmp(File, "/Status.html")==0)         || (strcasecmp(File, "Status.html")==0) )
      { Status(Client); return; }
-     else if( (strcmp(File, "/spectrogram.jpg")==0) || (strcmp(File, "spectrogram.jpg")==0) )
+     else if( (strcasecmp(File, "/Spectrogram.jpg")==0) || (strcasecmp(File, "Spectrogram.jpg")==0) )
      { OGN->SpectrogramQueue.Push(Client); return; }
+     else if( (strcasecmp(File, "/WideSpectrogram.jpg")==0) || (strcasecmp(File, "WideSpectrogram.jpg")==0) )
+     { OGN->WideSpectrogramQueue.Push(Client); return; }
      // else if( (strcmp(File, "/time-slot-rf.u8")==0)  || (strcmp(File, "time-slot-rf.u8")==0) )
      // { RF->RawDataQueue.Push(Client); return; }
      // NotFound:
@@ -937,13 +961,14 @@ Refresh: 5\r\n\
      dprintf(Client->SocketFile, "<tr><td>RF.RemoveDC</td><td align=right><b>%d FFT bins</b></td></tr>\n",            OGN->RemoveDC);
      dprintf(Client->SocketFile, "<tr><td>RF.OGN.SaveRawData</td><td align=right><b>%d sec</b></td></tr>\n",          RF->OGN_SaveRawData);
 
-
      dprintf(Client->SocketFile, "</table>\n");
 
      Client->Send("\
 <br />\r\n\
 RF spectrograms:\r\n\
-<a href='spectrogram.jpg'>OGN</a><br />\r\n\
+<a href='Spectrogram.jpg'>Narrow</a>\r\n\
+<a href='WideSpectrogram.jpg'>Wide (and with DC removed)</a><br />\r\n\
+Note: the very first spectrogram won't have the correct background level\r\n\
 ");
 
      Client->Send("</html>\r\n");
