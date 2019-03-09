@@ -386,7 +386,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      printf(" Stream MTU = %5.1f Ksamples = %5.3fms\n", MTU/1024.0, 1e3*MTU/DevSampleRate);
 
      int BlockSize = MTU;                                                                           // size of the transfer block
-     while(BlockSize>0x4000) BlockSize/=2;
+     // while(BlockSize>0x4000) BlockSize/=2;
      printf(" BlockSize = %5.1f Ksamples = %5.3fms\n", BlockSize/1024.0, 1e3*BlockSize/DevSampleRate);
 
      int SliceSamples = (int)floor(DevSampleRate+0.5);                                              // [samples] decide on the Slice size
