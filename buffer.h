@@ -820,19 +820,19 @@ template <class Float> // do sliding FFT over a buffer of float/double complex s
     Output.Date = Input.Date;
     Output.RxID = Input.RxID;
     Output.Freq = Input.Freq;
-    std::complex<InpType> *InpData = Input.Data;
-    std::complex<float> *OutData = Output.Data;
-    int Slides=0; int Job=0;
+    std::complex<InpType> *InpData = Input.Data;                      // input
+    std::complex<float> *OutData = Output.Data;                       // output
+    int Slides=0; int Job=0;                                          // count slides and jobs
     { std::complex<float> *Buffer = FwdFFT.Input(Job);                // first slide is special
       for( int Bin=0; Bin<WindowSize2; Bin++) { Buffer[Bin] = 0; }    // half the window is empty
       for( int Bin=WindowSize2; Bin<WindowSize; Bin++)                // the other half contains the first input samples
       { Buffer[Bin] = std::complex<float>(Window[Bin]*InpData[Bin-WindowSize2].real(), Window[Bin]*InpData[Bin-WindowSize2].imag()); }
-      Job++; InpData-=WindowSize2; }
+      Job++; }
     for( ; InpSamples>=WindowSize; InpSamples-=WindowSize2)           // now the following slides
     { std::complex<float> *Buffer = FwdFFT.Input(Job);
       for( int Bin=0; Bin<WindowSize; Bin++)
       { Buffer[Bin] = std::complex<float>(Window[Bin]*InpData[Bin].real(), Window[Bin]*InpData[Bin].imag()); }
-      Job++; InpData-=WindowSize2;
+      Job++; InpData+=WindowSize2;
       if(Job>=Jobs)
       { FwdFFT.ExecuteForward();
         for(int J=0; J<Jobs; J++)
@@ -846,7 +846,7 @@ template <class Float> // do sliding FFT over a buffer of float/double complex s
       { Buffer[Bin] = std::complex<float>(Window[Bin]*InpData[Bin].real(), Window[Bin]*InpData[Bin].imag()); }
       for( int Bin=WindowSize2; Bin<WindowSize; Bin++)
       { Buffer[Bin] = 0; }
-      Job++; InpData-=WindowSize2;
+      Job++; InpData+=WindowSize2;
       { FwdFFT.ExecuteForward();
         for(int J=0; J<Job; J++)
         { memcpy(OutData, FwdFFT.Output(J)+WindowSize2, WindowSize2*sizeof(std::complex<float>)); OutData+=WindowSize2;
