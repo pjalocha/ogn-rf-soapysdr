@@ -419,13 +419,13 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      int prevCenterFreq=0;
      while(!StopReq)
      { double EndTime = InpBuffer->Time + InpBuffer->Full/DevSampleRate;    // [sec] time of the end of the current slice
-       uint32_t SlotTime = (uint32_t)floor(EndTime-OGN_StartTime);          // [sec] time corresponding to the current slot
+       uint32_t SlotTime = (uint32_t)floor(EndTime-OGN_StartTime);          // [sec] time slot corresponding to the current time
        if( (InpBuffer->Full) && ((SlotTime>PrevSlotTime) || (InpBuffer->Full>=(SliceSamples+BlockSize))) ) // time for a new slice ?
-       { int CenterFreq = calcCenterFreq(InpBuffer->Date+SlotTime);         // calc. new center frequency
-         if(CenterFreq!=prevCenterFreq)                                     // if different from the previous one
+       { int CenterFreq = calcCenterFreq(InpBuffer->Date+SlotTime);         // [Hz] calc. new center frequency
+         if(CenterFreq!=prevCenterFreq)                                     // [Hz] if different from the previous one
          { if(setCenterFreq(CenterFreq)<0) StopReq=1; }                     // then change it
-         if(OGN_Gain!=prevOGN_Gain)                                         // update gain if changed
-         { if(setGain(OGN_Gain)<0) StopReq=1;
+         if(OGN_Gain!=prevOGN_Gain)                                         // [dB] if gain has changed
+         { if(setGain(OGN_Gain)<0) StopReq=1;                               // update the gain
            prevOGN_Gain=OGN_Gain; }
          int QueueSize=OutQueueCS16.Size();                                 // how many slices in the output queue ?
          if(TimeDiffCnt) { TimeDiffRMS/=TimeDiffCnt; }                      // [sec] average timestamp jitter
@@ -446,12 +446,12 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
              OGN_SaveRawData--; }
          }
          if(QueueSize<8)                                                       // decide if push th enew slice into the outgoing queue
-         { NextInp = OutQueueCS16.New();
-           NextInp->Allocate(*InpBuffer);
-           NextInp->Time=EndTime;
-           NextInp->Full=0;
-           OutQueueCS16.Push(InpBuffer);
-           InpBuffer=NextInp; NextInp=0; }
+         { NextInp = OutQueueCS16.New();                                       // ask a new slde (reuse and old one)
+           NextInp->Allocate(*InpBuffer);                                      // allocate at least same as the current one
+           NextInp->Time=EndTime;                                              // set the start Time
+           NextInp->Full=0;                                                    // empty for now
+           OutQueueCS16.Push(InpBuffer);                                       // push the current slice to the output queue
+           InpBuffer=NextInp; NextInp=0; }                                     // the new slice becomes the current slice
          else                                                                  // or drop the slice, as the queue is too long
          { InpBuffer->Full=0; InpBuffer->Time=EndTime; }
          if(CenterFreq!=prevCenterFreq)                                        // if different from the previous one
@@ -510,6 +510,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      // printf("calcCenterFreq(%d): %5.1f-%5.1f-%5.1f-%5.1f [%5.1f] => %5.1f [MHz] %c\n",
      //        Time, 1e-6*HopFreq[0], 1e-6*HopFreq[1], 1e-6*HopFreq[2], 1e-6*HopFreq[3], 1e-6*CenterFreq,
      //              1e-6*(HopFreq[3]-HopFreq[0]), CenterFreq!=MidFreq0?'*':' ');
+     // int CenterFreq = (HoppingPlan.getFrequency(Time, 0, 0) + HoppingPlan.getFrequency(Time, 0, 1))/2;
      return CenterFreq; }
 
 } ;

@@ -48,15 +48,15 @@ template <class Type>
        double   Rate;   // [Hz]  sampling rate
        double   Time;   // [sec] time when samples were acquired
        uint32_t Date;   // [sec] integer part of Time to keep precision
-       // uint32_t Index;  // Sample index/counter
-       // float BkgNoise;
+       uint32_t Index;  // Sample index/counter
+       float BkgNoise;  // Estimate of the background noise
      } ;
    } ;
 
    Type  *Data;     // (allocated) storage
 
   public:
-   SampleBuffer() { Size=0; Data=0; Full=0; Len=1; RxID=0; Freq=0; Rate=0; Time=0; Date=0; }
+   SampleBuffer() { Size=0; Data=0; Full=0; Len=1; RxID=0; Freq=0; Rate=0; Time=0; Date=0; Index=0; BkgNoise=0; }
   ~SampleBuffer() { Free(); }
 
    void Print(void) const
@@ -74,13 +74,14 @@ template <class Type>
    void Free(void) { if(Data) free(Data); Data=0; Size=0; Full=0; }
 
    int Allocate(int NewSize)
-   { if(NewSize<=Size) { Full=0; return Size; } // for timing eficiency: do not reallocate if same or bigger size already allocated
+   { if(NewSize<=Size) { Full=0; return Size; } // for eficiency: do not reallocate if same or bigger size already allocated
+     // printf("SampleBuffer::Allocate(%d*%d) Size=%d*%d/%d %s\n", NewSize, sizeof(Type), Size, sizeof(Type), Len, Data?" -> ":"NULL");
      Free();
      Data = (Type *)malloc(NewSize*sizeof(Type)); if(Data==0) { Size=0; return Size; }
      Size=NewSize; return Size; }
 
    int Allocate(int NewLen, int Samples)
-   { Allocate(NewLen*Samples); Len=NewLen; return Size; }
+   { Len=NewLen; Allocate(NewLen*Samples); return Size; }
 
    int Samples(void) const { return Full/Len; }                // number of samples
    Type *SamplePtr(int Idx) const { return Data+Idx*Len; }     // pointer to an indexed sample
@@ -108,10 +109,11 @@ template <class Type>
      return Sum/Full; }
 
    void Crop(int Head, int Tail)                              // crop the buffer itself
-   { int NewFull = Full-(Head+Tail)*Len;                      // size of data after the crop
+   { int32_t NewFull = Full-(Head+Tail)*Len;                  // size of data after the crop
      if(Head)                                                 // if we are to crop from the head
      { memmove(Data, Data+Head*Len, NewFull*sizeof(Type));    // copy/move the data
-       Time += Head/Rate; }                                   // advance the Time
+       Time += Head/Rate;                                     // advance the Time
+       Index += Head; }
      Full=NewFull; }
 
    void Crop(SampleBuffer<Type> &Out, int Head, int Tail)     // copy part of the buffer into a new buffer
@@ -119,7 +121,9 @@ template <class Type>
      int NewFull=Full-(Head+Tail)*Len;
      memmove(Out.Data, Data+Head*Len, NewFull*sizeof(Type));
      Out.Time = Time+Head/Rate;
-     Out.Full = NewFull; }
+     Out.Full = NewFull;
+     Out.Index = Index+Head;
+     Out.BkgNoise = BkgNoise; }
 
    int Copy(const SampleBuffer<Type> &Buffer)                   // allocate and copy from another SampleBuffer
    { Allocate(Buffer); memcpy(Data, Buffer.Data, Buffer.Full*sizeof(Type)); Full=Buffer.Full; return Full; }
@@ -174,6 +178,9 @@ template <class Type>
   template <class StreamType>
    int Serialize(StreamType File) // write SampleBuffer to a file/socket
    { int Total=0, Bytes;
+     Bytes=Serialize_WriteData(File, Header, HeaderSize*sizeof(uint32_t)); if(Bytes<0) return -1;
+     Total+=Bytes;
+/*
      Bytes=Serialize_WriteData(File, &Size, sizeof(int32_t)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_WriteData(File, &Full, sizeof(int32_t)); if(Bytes<0) return -1;
@@ -182,20 +189,35 @@ template <class Type>
      Total+=Bytes;
      Bytes=Serialize_WriteData(File, &Rate, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
-     double FullTime=Time+Date;
-     Bytes=Serialize_WriteData(File, &FullTime, sizeof(double)); if(Bytes<0) return -1;
+     Bytes=Serialize_WriteData(File, &Date, sizeof(uint32_t)); if(Bytes<0) return -1;
+     Total+=Bytes;
+     Bytes=Serialize_WriteData(File, &Time, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_WriteData(File, &RxID, sizeof(uint32_t)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_WriteData(File, &Freq, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
+*/
      Bytes=Serialize_WriteData(File,  Data, Full*sizeof(Type)); if(Bytes<0) return -1;
      Total+=Bytes;
      return Total; }
 
   template <class StreamType>
    int Deserialize(StreamType File)  // read SampleBuffer from a file/socket
-   { int Total=0, Bytes;
+   { int Total=0, Bytes; int32_t OldSize=Size;
+     Bytes=Serialize_ReadData(File, Header, HeaderSize*sizeof(uint32_t));
+     int32_t NewSize=Size; Size=OldSize;
+     int32_t NewFull=Full;
+     if(Bytes<0) { Full=0; return -1; }
+     // printf("SampleBuffer::Deserialize() => %d, Size=%d, NewSize=%d, Full=%d\n", Bytes, Size, NewSize, Full);
+     if( (NewSize<0) || (NewSize<Full) ) { Full=0; return -1; }
+     Total+=Bytes;
+     if(Allocate(NewSize)==0) return -2;
+     // printf("SampleBuffer::Deserialize() Size=%d, NewSize=%d, Full=%d\n", Size, NewSize, Full);
+     Bytes=Serialize_ReadData(File,  Data, NewFull*sizeof(Type)); if(Bytes<0) return -1;
+     Full=NewFull;
+     Total+=Bytes;
+/*
      int32_t NewSize=0;
      Bytes=Serialize_ReadData(File, &NewSize, sizeof(int32_t)); if(Bytes<0) return -1;
      if(NewSize<0) return -1;
@@ -207,41 +229,52 @@ template <class Type>
      Total+=Bytes;
      Bytes=Serialize_ReadData(File, &Rate, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
+     Bytes=Serialize_ReadData(File, &Date, sizeof(uint32_t)); if(Bytes<0) return -1;
+     Total+=Bytes;
      Bytes=Serialize_ReadData(File, &Time, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
-     Date=(uint32_t)floor(Time); Time-=Date;
      Bytes=Serialize_ReadData(File, &RxID, sizeof(uint32_t)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_ReadData(File, &Freq, sizeof(double)); if(Bytes<0) return -1;
      Total+=Bytes;
      Bytes=Serialize_ReadData(File,  Data, Full*sizeof(Type)); if(Bytes<0) return -1;
      Total+=Bytes;
+*/
      return Total; }
 
    int Write(FILE *File) // write all samples onto a binary file (with header)
-   { if(fwrite(&Size, sizeof(Size), 1, File)!=1) return -1;
+   { if(fwrite(Header, HeaderSize*sizeof(uint32_t), 1, File)!=1) return -1;
+/*
+     if(fwrite(&Size, sizeof(Size), 1, File)!=1) return -1;
      if(fwrite(&Full, sizeof(Full), 1, File)!=1) return -1;
      if(fwrite(&Len,  sizeof(Len),  1, File)!=1) return -1;
      if(fwrite(&Rate, sizeof(Rate), 1, File)!=1) return -1;
-     double FullTime=Time+Date;
-     if(fwrite(&FullTime, sizeof(FullTime), 1, File)!=1) return -1;
-     // if(fwrite(&Time, sizeof(Time), 1, File)!=1) return -1;
+     if(fwrite(&Date, sizeof(Date), 1, File)!=1) return -1;
+     if(fwrite(&Time, sizeof(Time), 1, File)!=1) return -1;
      if(fwrite(&RxID, sizeof(RxID), 1, File)!=1) return -1;
      if(fwrite(&Freq, sizeof(Freq), 1, File)!=1) return -1;
+*/
      if(fwrite(Data,  sizeof(Type), Size, File)!=(size_t)Size) return -1;
      return 1; }
 
    int Read(FILE *File) // read samples from a binary file (with header)
-   { if(fread(&Size, sizeof(Size), 1, File)!=1) return -1;
+   { int32_t OldSize=Size;
+     if(fread(Header, HeaderSize*sizeof(uint32_t), 1, File)!=1) return -1;
+     int32_t NewSize=Size; Size=OldSize;
+     int32_t NewFull=Full;
+/*
+     if(fread(&Size, sizeof(Size), 1, File)!=1) return -1;
      if(fread(&Full, sizeof(Full), 1, File)!=1) return -1;
      if(fread(&Len,  sizeof(Len),  1, File)!=1) return -1;
      if(fread(&Rate, sizeof(Rate), 1, File)!=1) return -1;
+     if(fread(&Date, sizeof(Date), 1, File)!=1) return -1;
      if(fread(&Time, sizeof(Time), 1, File)!=1) return -1;
-     Date=(uint32_t)floor(Time); Time-=Date;
      if(fread(&RxID, sizeof(RxID), 1, File)!=1) return -1;
      if(fread(&Freq, sizeof(Freq), 1, File)!=1) return -1;
-     Allocate(Size);
-     if(fread(Data,  sizeof(Type), Size, File)!=(size_t)Size) return -1;
+*/
+     Allocate(NewSize);
+     if(fread(Data,  sizeof(Type), NewSize, File)!=(size_t)Size) return -1;
+     Size=NewSize; Full=NewFull;
      return 1; }
 
    int ReadRaw(FILE *File, int Len, int MaxSamples, double Rate=1) // read samples from a raw binary file
@@ -267,6 +300,17 @@ template <class Type>
 
 // Note 1: the sliding FFT routines below take sliding step = half the FFT window size (thus SineWindow should be used)
 // Note 2: the FFT output spectra have the two halfs swapped around thus the FFT amplitude corresponding to the center frequency is in the middle
+
+template <class Float>
+ int SlidingFFT(SampleBuffer< std::complex<Float> > &Output, const SampleBuffer< std::complex<uint8_t> > &Input,
+                InpSlideFFT<Float> &FFT, Float InpBias=127.38)
+{ return SlidingFFT(Output, Input, FFT.FwdFFT, FFT.Window, InpBias); }
+
+template <class Float> // do sliding FFT over a buffer of (complex 8-bit) samples, produce (float/double complex) spectra
+ int SlidingFFT(SampleBuffer< std::complex<Float> > &Output, const SampleBuffer< std::complex<uint8_t> >&Input,
+                DFT1d<Float> &FwdFFT, Float *Window, Float InpBias=127.38)
+{ 
+  return 0; }
 
 template <class Float>
  int SlidingFFT(SampleBuffer< std::complex<Float> > &Output, const SampleBuffer<uint8_t> &Input,

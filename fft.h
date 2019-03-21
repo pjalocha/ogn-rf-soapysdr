@@ -28,6 +28,8 @@
 #include <complex>
 #include <new>
 
+#include "fftsg.h"
+
 #include <fftw3.h>   // for complex input/output FFT
 // #include <rfftw.h>  // for real-only input/output FFT
 
@@ -72,6 +74,53 @@ template <class Float>
 // ===========================================================================================
 
 template <class Float>
+ class DFTsg
+{ public:
+   std::complex<Float> *Buffer; // input and output buffer
+   int                 *IP;
+   Float                *W;
+   int                  Size;   // [FFT points]
+   int                  Sign;   // forward or backward (inverse)
+
+  public:
+   DFTsg() { Buffer=0; Size=0; Sign=0; }
+
+  ~DFTsg() { Free(); }
+
+   void Free(void)
+   { if(Buffer) { free(Buffer); Buffer=0; }
+     if(IP) { free(IP); IP=0; }
+     if(W)  { free(W); W=0; }
+     Size=0; Sign=0; }
+
+   int Preset(int Size, int Sign=(-1))
+   { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
+     Free();
+     Buffer = (std::complex<Float> *)malloc(Size*sizeof(std::complex<Float>)); if(Buffer==0) return -1;
+      W = (Float *)malloc(Size/2*sizeof(Float)); if(W==0) { Free(); return -1; }
+     IP = (int *)malloc((int)floor(4+sqrt((double)Size))*sizeof(int)); if(IP==0) { Free(); return -1; }
+     IP[0]=0;
+     this->Size=Size; this->Sign=Sign; return Size; }
+
+   int PresetForward (int Size) { return Preset(Size, -1); }
+   int PresetBackward(int Size) { return Preset(Size, +1); }
+
+  template <class Type>
+   static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
+   { for(int Idx=0; Idx<WindowSize; Idx++)
+     { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
+   }
+
+  std::complex<Float>& operator [] (int Idx) { return Buffer[Idx]; }  // access to input/output buffer
+
+  void Execute(                          void) { cdft(2*Size, Sign, (Float *)Buffer,    IP, W); }
+  void Process(std::complex<Float> *ExtBuffer) { cdft(2*Size, Sign, (Float *)ExtBuffer, IP, W); }
+
+} ;
+
+// ===========================================================================================
+
+template <class Float>
  class DFT1d
 { public:
    std::complex<Float> *Buffer; // input and output buffer
@@ -84,28 +133,28 @@ template <class Float>
 
   ~DFT1d() { Free(); }
 
-  void Free(void)
+   void Free(void)
    { if(Buffer) { fftw_destroy_plan(Plan); fftw_free(Buffer); Buffer=0; Size=0; Sign=0; } }
 
-  int Preset(int Size, int Sign, bool Fast=1)
-  { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
-    Free();
-    Buffer = (std::complex<Float> *)fftw_malloc(Size*sizeof(std::complex<Float>)); if(Buffer==0) return -1;
-    Plan = fftw_plan_dft_1d(Size, (fftw_complex *)Buffer, (fftw_complex *)Buffer, Sign, Fast?FFTW_ESTIMATE:FFTW_MEASURE);
-    this->Size=Size; this->Sign=Sign; return Size; }
+   int Preset(int Size, int Sign, bool Fast=1)
+   { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
+     Free();
+     Buffer = (std::complex<Float> *)fftw_malloc(Size*sizeof(std::complex<Float>)); if(Buffer==0) return -1;
+     Plan = fftw_plan_dft_1d(Size, (fftw_complex *)Buffer, (fftw_complex *)Buffer, Sign, Fast?FFTW_ESTIMATE:FFTW_MEASURE);
+     this->Size=Size; this->Sign=Sign; return Size; }
 
-  int PresetForward(int Size) { return Preset(Size, FFTW_FORWARD); }
-  int PresetBackward(int Size) { return Preset(Size, FFTW_BACKWARD); }
+   int PresetForward(int Size) { return Preset(Size, FFTW_FORWARD); }
+   int PresetBackward(int Size) { return Preset(Size, FFTW_BACKWARD); }
 
   template <class Type>
    static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
-  { for(int Idx=0; Idx<WindowSize; Idx++)
-    { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
-  }
+   { for(int Idx=0; Idx<WindowSize; Idx++)
+     { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
+   }
 
   std::complex<Float>& operator [] (int Idx) { return Buffer[Idx]; }  // access to input/output buffer
 
-  void Execute(void) { return fftw_execute(Plan); }
+  void Execute(void) { fftw_execute(Plan); }
 
   void PrintPlan(void) { fftw_print_plan(Plan); printf("\n"); }
 
