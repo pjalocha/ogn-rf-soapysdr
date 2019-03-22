@@ -544,7 +544,7 @@ template <class Float>
    const static uint32_t OutPipeSync = 0x254F7D00 + sizeof(Float);
 
    MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
-   MessageQueue<Socket *>  WideSpectrogramQueue;        // sockets send to this queue should be written with a most recent spectrogram
+   MessageQueue<Socket *>  WideSpectrogramQueue;       // sockets send to this queue should be written with a most recent wide spectrogram
    DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
    int                     SpectrogramFFTsize;         // FFT size for the spectrogram
    float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
@@ -560,7 +560,7 @@ template <class Float>
    { Window=0; this->RF=RF;
      RemoveDC=0;
      Preset();
-     SpectrogramWindow=0; SpectraBkgNoise=128;
+     SpectrogramWindow=0; SpectraBkgNoise=0;
      OutPipe=(-1);
      Config_Defaults(); }
 
@@ -673,12 +673,13 @@ template <class Float>
    { printf("Inp_FFT.Exec() ... Start\n");
      while(!StopReq)
      { double ExecTime=getCPU();
-       if(RF->OutQueueCS16.Size())
-       { SampleBuffer< std::complex<int16_t> > *InpBufferCS16 = RF->OutQueueCS16.Pop(); // here we wait for a new data batch
+       if(RF->OutQueueCS16.Size())                                                             // is there any new RF slice ?
+       { SampleBuffer< std::complex<int16_t> > *InpBufferCS16 = RF->OutQueueCS16.Pop();        // here we wait for a new data batch
          // printf("Inp_FFT.Exec() ... (%5.3fMHz, %5.3fsec, %dsamples)\n", 1e-6*InpBuffer->Freq, InpBuffer->Time, InpBuffer->Full/2);
-         SlidingFFT(Spectra, *InpBufferCS16, FFT, Window);  // Process input samples, produce FFT spectra
+         SlidingFFT(Spectra, *InpBufferCS16, FFT, Window);                                     // Process input samples, produce FFT spectra
 
-         if(SpectrogramQueue.Size())
+         uint32_t SlotTime = InpBufferCS16->Date+(uint32_t)floor(InpBufferCS16->Time);
+         if(SpectraBkgNoise==0 || SpectrogramQueue.Size())                                     // if there is HTTP request for the spectrogram
          { SlidingFFT(SpectraBuffer, *InpBufferCS16, SpectrogramFFT, SpectrogramWindow);
            SpectraPower(SpectraPwr, SpectraBuffer);                                            // calc. spectra power
            LogImage(Image, SpectraPwr, (float)SpectraBkgNoise, (float)32.0, (float)32.0);      // make the image
@@ -691,9 +692,9 @@ template <class Float>
            // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
            sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
 Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
-Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.jpg\"\r\n\r\n",
+Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.jpg\"\r\n\r\n",
                    RF->FilePrefix, 1e-6*SpectraPwr.Freq, 1e-6*SpectraPwr.Rate*SpectraPwr.Len/2,
-                   SpectraPwr.Len, (uint32_t)floor(SpectraPwr.Date+SpectraPwr.Time));
+                   SpectraPwr.Len, SpectraPwr.Date+SpectraPwr.Time);
            Client->Send(HTTPheader);
            Client->Send(JpegImage.Data, JpegImage.Size);
            Client->SendShutdown(); Client->Close(); delete Client;
@@ -703,7 +704,7 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.
          if(RemoveDC) RemoveDCbias(Spectra, (RemoveDC|1)/2);
          WriteToPipe(); // here we send the FFT spectra in Spectra to the demodulator
 
-         if(WideSpectrogramQueue.Size())
+         if(SpectraBkgNoise==0 || WideSpectrogramQueue.Size())
          { SpectraPower(SpectraPwr, Spectra);                                                  // calc. spectra power
            LogImage(Image, SpectraPwr, (float)SpectraBkgNoise, (float)32.0, (float)32.0);      // make the image
            JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                  // and into JPEG
@@ -715,9 +716,9 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.
            // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
            sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
 Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
-Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%10dsec.jpg\"\r\n\r\n",
+Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.jpg\"\r\n\r\n",
                    RF->FilePrefix, 1e-6*SpectraPwr.Freq, 1e-6*SpectraPwr.Rate*SpectraPwr.Len/2,
-                   SpectraPwr.Len, (uint32_t)floor(SpectraPwr.Date+SpectraPwr.Time));
+                   SpectraPwr.Len, SpectraPwr.Date+SpectraPwr.Time);
            Client->Send(HTTPheader);
            Client->Send(JpegImage.Data, JpegImage.Size);
            Client->SendShutdown(); Client->Close(); delete Client;
