@@ -131,20 +131,23 @@ class RTLSDR
    int     setFreqCorrection(int PPM)           { return rtlsdr_set_freq_correction(Device, PPM); } // [PPM] (Part-Per-Million)
    int     getFreqCorrection(void)              { return rtlsdr_get_freq_correction(Device); } // (fast call)
 
+   int setTunerBandwidth(int Bandwidth) { return rtlsdr_set_tuner_bandwidth(Device, Bandwidth); }    // [Hz]
+   // int setTunerBandwidth(int Bandwidth) { return rtlsdr_set_if_bandwidth(Device, Bandwidth); }    // [Hz]
 #ifdef NEW_RTLSDR_LIB
-   int setTunerBandwidth(int Bandwidth) { return rtlsdr_set_tuner_bandwidth(Device, Bandwidth); }    // [Hz] a new (advanced) function
    // int getTunerBandwidth(void)     { int Bandwidth; return rtlsdr_get_tuner_bandwidth(Device, &Bandwidth); return Bandwidth; }
    int getTunerBandwidths(int *Bandwidth=0) { return rtlsdr_get_tuner_bandwidths(Device, Bandwidth); }
 #endif
 
    int getTunerGains(int *Gain=0)           { return rtlsdr_get_tuner_gains(Device, Gain); }
+   int setTunerStageGain(int Stage, int Gain) { return rtlsdr_set_tuner_if_gain(Device, Stage, Gain); }
 #ifdef NEW_RTLSDR_LIB
-   int getTunerStageGains(int Stage, int32_t *Gain, char *Description=0) { return rtlsdr_get_tuner_stage_gains(Device, Stage, Gain, Description); }
-   int setTunerStageGain(int Stage, int Gain) { return rtlsdr_set_tuner_stage_gain(Device, Stage, Gain); }
+   int getTunerStageGains(int Stage, int32_t *Gain, char *Description=0) { return rtlsdr_get_tuner_if_gains(Device, Stage, Gain, Description); }
 #endif
    // int setTunerGain(int Gain) { return rtlsdr_set_tuner_gain(Device, Gain); }    // [0.1 dB]    set tuner gain when in manual mode
    int setTunerGain(int Gain) { return rtlsdr_set_tuner_gain(Device, getTunerClosestGain(Gain)); }
    int getTunerGain(void)     { return rtlsdr_get_tuner_gain(Device); }
+   int getTunerMaxGain(void)  { return Gain[Gains-1]; }
+   int getTunerMinGain(void)  { return Gain[      0]; }
    int getTunerClosestGain(int ReqGain) const
    { if(Gains==0) return ReqGain;
      if(ReqGain>=Gain[Gains-1]) return Gain[Gains-1];
@@ -178,8 +181,9 @@ class RTLSDR
    int ResetBuffer(void) { return rtlsdr_reset_buffer(Device); }              // obligatory, the docs say, before you start reading
 
    // this call appers to be gone from the newset RTL-SDR driver
-   // int setBiasTee(int On=1) { return rtlsdr_set_bias_tee(Device, On); }       // turn on or off the T-bias circuit to power external LNA: never use with DC-shorted antennas !
-   int setBiasTee(int On=1) { return 0; }       // dummy
+   int setBiasTee(int On=1) { return rtlsdr_set_bias_tee(Device, On); }       // turn on or off the T-bias circuit to power external LNA: never use with DC-shorted antennas !
+   // int setBiasTee(int On=1) { return 0; }       // dummy
+   // int setBiasTee(int On=1, int Pin=0) { return rtlsdr_set_gpio(Device, On, Pin); }
 
    double getTime(void) const                                                 // read the system time at this very moment
 #ifndef __MACH__ // _POSIX_TIMERS

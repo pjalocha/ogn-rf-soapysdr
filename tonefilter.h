@@ -9,8 +9,13 @@ template <class Float>
    int              FFTsize;
    double           Threshold;
 
+#ifdef USE_FFTSG
+   DFTsg<Float>     FwdFFT;
+   DFTsg<Float>     BwdFFT;
+#else
    DFT1d<Float>     FwdFFT;
    DFT1d<Float>     BwdFFT;
+#endif
    Float           *Window;
    Float           *Sort;
 

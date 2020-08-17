@@ -35,6 +35,16 @@
 
 // ===================================================================================================
 
+/*
+double getTime(void) // read the system time at this very moment
+#ifndef __MACH__ // _POSIX_TIMERS
+{ struct timespec now; clock_gettime(RefClock, &now); return now.tv_sec + 1e-9*now.tv_nsec; }
+#else                // for OSX, there is no clock_gettime()
+{ struct timeval now; gettimeofday(&now, 0); return now.tv_sec + 1e-6*now.tv_usec; }
+#endif
+*/
+// ===================================================================================================
+
 int getMemoryUsage(int &Total, int &Free) // get total and free RAM [kB]
 { FILE *File=fopen("/proc/meminfo","rt"); if(File==0) return -1;
   char Line[64];
@@ -54,6 +64,8 @@ template <class Float>
   Used = (Float)(Total-Free)/Total; return 0; }
 
 // ===================================================================================================
+
+inline int getCPUs(void) { return get_nprocs(); }  // get number of available CPUs
 
 int getCpuUsage(int &DiffTotal, int &DiffUser, int &DiffSystem) // get CPU usage
 { static int RefTotal=0, RefUser=0, RefSystem=0;

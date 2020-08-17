@@ -68,7 +68,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
    int    FFTsize;
    double FreqCorr;                             // [ppm] frequency correction applied to the Rx chip
    // int    OffsetTuning;                         // [bool] this option might be good for E4000 tuner
-   // int    BiasTee;                              // [bool] T-bias for external LNA power
+   int    BiasTee;                              // [bool] T-bias for external LNA power
    // double FreqRaster;                           // [Hz] use only center frequencies on this raster to avoid tuning inaccuracies
    char Format[8];                              // sample format, for now only CS16
 
@@ -125,11 +125,12 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      Setting[0]=0;
      Channel=0;
      strcpy(Format, "CS16");
-     SampleRate=1.0e6;
+     SampleRate = getCPUs()>=2 ? 2.0e6:1.0e6;
      Bandwidth=SampleRate;
      FFTsize=0;
      // OffsetTuning=0;
-     // FreqRaster=28125; BiasTee=(-1);
+     // FreqRaster=28125;
+     BiasTee=(-1);
      FreqCorr=0;
      OGN_CenterFreq = 0;  // 868.3e6;
      OGN_StartTime=0.300; // [sec] time-slot boundary
@@ -175,7 +176,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
     config_lookup_int(Config,   "RF.FFTsize",        &FFTsize);
 
     // config_lookup_int(Config,   "RF.OfsTune",        &OffsetTuning);
-    // config_lookup_int(Config,   "RF.BiasTee",        &BiasTee);
+    config_lookup_int(Config,   "RF.BiasTee",        &BiasTee);
     // config_lookup_int(Config,   "RF.OGN.GainMode",   &OGN_GainMode);
 
     config_lookup_int(Config,   "RF.OGN.SaveRawData",   &OGN_SaveRawData);
@@ -274,6 +275,8 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      //   SoapySDRKwargs_set(&args, "device_id", DevID); }
      if(Serial[0])
        SoapySDRKwargs_set(&args, "serial", Serial);
+     if(BiasTee>=0)
+       SoapySDRKwargs_set(&args, "bias_tee", BiasTee>0?"true":"false");
      SDR = SoapySDRDevice_make(&args);
      SoapySDRKwargs_clear(&args);
      if(SDR==0)
@@ -491,6 +494,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
    int calcCenterFreq(uint32_t Time)
    { if(OGN_CenterFreq) return OGN_CenterFreq;
+     if(HoppingPlan.Plan<=1) return SampleRate>=1500000 ? 868800000:868300000;
      int HopFreq[4];
      HopFreq[0] = HoppingPlan.getFrequency(Time, 0, 0); // 1st slot, Flarm
      HopFreq[1] = HoppingPlan.getFrequency(Time, 0, 1); // 1st slot, OGN
@@ -527,12 +531,17 @@ template <class Float>
    int RemoveDC;                                    // remove DC I/Q bias
 
    // int              FFTsize;
-#ifdef USE_RPI_GPU_FFT
-   RPI_GPU_FFT      FFT;
-#elif USE_CLFFT
+// #ifdef USE_RPI_GPU_FFT
+//    RPI_GPU_FFT      FFT;
+
+#if USE_CLFFT
    clFFT            FFT;
 #else
+#ifdef USE_FFTSG
+   DFTsg<Float>     FFT;                            // DFTsg is faster on Orange-PI zero
+#else
    DFT1d<Float>     FFT;
+#endif
 #endif
    Float           *Window;                         // Shape for the sliding window FFT
 
@@ -545,7 +554,11 @@ template <class Float>
 
    MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
    MessageQueue<Socket *>  WideSpectrogramQueue;       // sockets send to this queue should be written with a most recent wide spectrogram
+#ifdef USE_FFTSG
+   DFTsg<float>            SpectrogramFFT;             // FFT to create spectrograms
+#else
    DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
+#endif
    int                     SpectrogramFFTsize;         // FFT size for the spectrogram
    float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
    SampleBuffer< std::complex<float> > SpectraBuffer;  //
@@ -584,7 +597,7 @@ template <class Float>
    int Preset(void) { return Preset(RF->SampleRate, RF->FFTsize); }       // preset for configured sampling rate
 
    int Preset(int SampleRate, int FFTsize=0)                 // preset for given RF sampling rate
-   { if(FFTsize==0) FFTsize=(8*8*SampleRate)/15625;
+   { if(FFTsize==0) FFTsize=(8*4*SampleRate)/15625;          // 4096-FFT for 2MHz, 2048-FFT for 1MHz
      FFTsize = 1<<(31-__builtin_clz(FFTsize));               // round the FFTsize to the power-of-2
 #ifdef USE_CLFFT
      FFT.Preset(FFTsize);
@@ -592,13 +605,13 @@ template <class Float>
      FFT.PresetForward(FFTsize);
 #endif
      Window=(Float *)realloc(Window, FFTsize*sizeof(Float));
-     FFT.SetSineWindow(Window, FFTsize, (Float)(1.0/sqrt(FFTsize)) );
+     FFT.SetSineWindow(Window, FFTsize, (Float)(1.0/256/sqrt(FFTsize)) );             // extra 1/256 factor to get noise levels same as for 8-bit
 
      if(SpectrogramFFTsize==0) SpectrogramFFTsize=(8*SampleRate)/15625;               // 512 for 1Msps, 1024 for 2Msps sampling
      SpectrogramFFTsize = 1<<(31-__builtin_clz(SpectrogramFFTsize));                  // round the FFTsize to the power-of-2
      SpectrogramFFT.PresetForward(SpectrogramFFTsize);
      SpectrogramWindow=(float *)realloc(SpectrogramWindow, SpectrogramFFTsize*sizeof(float));
-     SpectrogramFFT.SetSineWindow(SpectrogramWindow, SpectrogramFFTsize, (float)(1.0/sqrt(SpectrogramFFTsize)) );
+     SpectrogramFFT.SetSineWindow(SpectrogramWindow, SpectrogramFFTsize, (float)(1.0/256/sqrt(SpectrogramFFTsize)) );
 
      return 1; }
 
@@ -958,8 +971,8 @@ Refresh: 5\r\n\
      dprintf(Client->SocketFile, "<tr><td>RF.FreqCorr</td><td align=right><b>%+4.1f ppm</b></td></tr>\n",             RF->FreqCorr);
      // if(RF->FreqRaster)
      //   dprintf(Client->SocketFile, "<tr><td>RF.FreqRaster</td><td align=right><b>%3d Hz</b></td></tr>\n",          RF->FreqRaster);
-     // if(RF->BiasTee>=0)
-     //   dprintf(Client->SocketFile, "<tr><td>RF.BiasTee</td><td align=right><b>%d</b></td></tr>\n",                    RF->BiasTee);
+     if(RF->BiasTee>=0)
+       dprintf(Client->SocketFile, "<tr><td>RF.BiasTee</td><td align=right><b>%d</b></td></tr>\n",                    RF->BiasTee);
      // dprintf(Client->SocketFile, "<tr><td>RF.OffsetTuning</td><td align=right><b>%d</b></td></tr>\n",                 RF->OffsetTuning);
      if(RF->OGN_CenterFreq)
       dprintf(Client->SocketFile, "<tr><td>RF.OGN.CenterFreq</td><td align=right><b>%5.1f MHz</b></td></tr>\n",  1e-6*RF->OGN_CenterFreq);

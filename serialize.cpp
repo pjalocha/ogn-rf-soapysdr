@@ -10,7 +10,7 @@ int Serialize_WriteData(int Stream, const void *Data, int Bytes)
 int Serialize_ReadData (int Stream, void *Data, int Bytes)
 { int Done=0;
   for( ; Done<Bytes; )
-  { int Len=read(Stream, Data+Done, Bytes-Done);
+  { int Len=read(Stream, (uint8_t *)Data+Done, Bytes-Done);
     if(Len<0) return Len;
     Done+=Len; }
   return Done; }

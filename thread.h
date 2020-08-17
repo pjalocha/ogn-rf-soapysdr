@@ -32,6 +32,7 @@
 #include <errno.h>
 
 #include <queue>
+#include <algorithm>
 
 // ======================================================================================
 
@@ -50,7 +51,7 @@ class MutEx   // for Mutual Exclusive access to a resource
   public:
    int Lock(void)     { return pthread_mutex_lock(&muLock); }        // gain access to the object (can block)
    int Unlock(void)   { return pthread_mutex_unlock(&muLock); }      // release the access to the object
-   int TryLock(void)  { int Err=pthread_mutex_lock(&muLock);         // non-blocking attempt to lock
+   int TryLock(void)  { int Err=pthread_mutex_trylock(&muLock);      // non-blocking attempt to lock
                         return Err==EBUSY ? 1:Err; }                 // 0 => lock succesfull, 1 => already locked by someone
 } ;
 
@@ -80,7 +81,7 @@ class Condition
   public:
    int Lock(void)      { return pthread_mutex_lock(&muLock); }           // gain access to the object (can block)
    int Unlock(void)    { return pthread_mutex_unlock(&muLock); }         // release the access to the object
-   int TryLock(void)   { int Err=pthread_mutex_lock(&muLock);            // non-blocking attempt to lock
+   int TryLock(void)   { int Err=pthread_mutex_trylock(&muLock);         // non-blocking attempt to lock
                          return Err==EBUSY ? 1:Err; }                    // 0 => lock succesfull, 1 => already locked by someone
 
    int Signal(void)    { return pthread_cond_signal(&sigCond); }         // signal to at least one thread, that something has changed
@@ -144,9 +145,50 @@ template <class Type>
 } ;
 
 template <class Type>
+ class ObjectQueue                // this object queue holds objects
+{ public:                         //
+   std::queue<Type *> Queue;      // objects in the queue
+   Condition          Cond;
+
+  public:
+
+   ObjectQueue()
+   { }
+
+  ~ObjectQueue()
+   { while(!Queue.empty()) { delete Queue.front(); Queue.pop(); }
+   }
+
+   void Push(Type *Obj)                // add object to the queue
+   { Cond.Lock();
+     Queue.push(Obj);                  // push the object to the queue
+     Cond.Unlock();
+     Cond.Signal(); }
+
+   Type *Pop(void)                     // take object from the queue (wait forever, if no object there)
+   { Cond.Lock();
+     while(Queue.empty()) Cond.Wait(); // wait for the queue not being empty
+     Type *Obj = Queue.front(); Queue.pop();
+     Cond.Unlock(); return Obj; }
+
+   int Size(void)                      // how many objects waiting in the queue ?
+   { Cond.Lock();
+     int Size = Queue.size();
+     Cond.Unlock();
+     return Size; }
+
+} ;
+
+#define WITH_DEQUEUE
+
+template <class Type>
  class ReuseObjectQueue           // this object queue holds objects
 { public:                         // that can be reused - thus don't need to be created and deleted all the time
+#ifdef WITH_DEQUEUE
+   std::deque<Type *> Queue;      // objects in the queue
+#else
    std::queue<Type *> Queue;      // objects in the queue
+#endif
    std::queue<Type *> Reuse;      // objects to be reused, these can be queued again
    Condition          Cond;
    int                Float;      // number of "floating" objects which are in neither queue
@@ -157,9 +199,21 @@ template <class Type>
    { Float=0; }
 
   ~ReuseObjectQueue()
-   { while(!Queue.empty()) { delete Queue.front(); Queue.pop(); }
+   {
+#ifdef WITH_DEQUEUE
+     while(!Queue.empty()) { delete Queue.front(); Queue.pop_front(); }
+#else
+     while(!Queue.empty()) { delete Queue.front(); Queue.pop(); }
+#endif
      while(!Reuse.empty()) { delete Reuse.front(); Reuse.pop(); }
    }
+
+#ifdef WITH_DEQUEUE
+   void Sort(bool (Less)(const Type *A, const Type *B))
+   { Cond.Lock();
+     std::sort(Queue.begin(), Queue.end(), Less);
+     Cond.Unlock(); }
+#endif
 
    Type *New(void)                     // create new (or re-use and old) object
    { Cond.Lock();
@@ -172,23 +226,52 @@ template <class Type>
      Cond.Unlock();
      return Obj; }                     // return pointer to the object which can be now used
 
-   void Push(Type *Obj)                // add object to the queue
+   void Push(Type **Obj, int Num)       // add object(s) to the queue
    { Cond.Lock();
-     Queue.push(Obj); Float--;         // push the object to the queue
+     for(int Idx=0; Idx<Num; Idx++)
+     {
+#ifdef WITH_DEQUEUE
+       Queue.push_back(Obj[Idx]);      // push the object to the queue
+#else
+       Queue.push(Obj[Idx]);           // push the object to the queue
+#endif
+     }
+     Float-=Num;
      Cond.Unlock();
      Cond.Signal(); }
+
+   void Push(Type *Obj)                // add object to the queue
+   { Cond.Lock();
+#ifdef WITH_DEQUEUE
+     Queue.push_back(Obj); Float--;         // push the object to the queue
+#else
+     Queue.push(Obj); Float--;         // push the object to the queue
+#endif
+     Cond.Unlock();
+     Cond.Signal(); }
+
+#ifdef WITH_DEQUEUE
+   void RePush(Type *Obj)
+   { Cond.Lock();
+     Queue.push_front(Obj); Float--;
+     Cond.Unlock(); }
+#endif
 
    Type *Pop(void)                     // take object from the queue (wait forever, if no object there)
    { Cond.Lock();
      while(Queue.empty()) Cond.Wait(); // wait for the queue not being empty
+#ifdef WITH_DEQUEUE
+     Type *Obj = Queue.front(); Queue.pop_front(); Float++;
+#else
      Type *Obj = Queue.front(); Queue.pop(); Float++;
+#endif
      Cond.Unlock(); return Obj; }
 
-   void Recycle(Type *Obj)             // when object no longer needed
+   void Recycle(Type *Obj)                   // call when object no longer needed
    { Cond.Lock();
      // if( Reuse.size()<=(4+Queue.size()) ) // decide: reuse or delete
-     if( Reuse.size()<8)               // decide: reuse or delete
-     { Reuse.push(Obj); }              //
+     if( Reuse.size()<(2*Queue.size()+4))    // decide: reuse or delete
+     { Reuse.push(Obj); }                    //
      else
      { delete Obj; }
      Float--;
@@ -201,7 +284,7 @@ template <class Type>
      Cond.Unlock();
      return Size; }
 
-   int ReuseSize(void)               // how many objects waiting in the queue ?
+   int ReuseSize(void)                // how many object read for use (already allocated) ?
    { Cond.Lock();
      int Size = Reuse.size();
      Cond.Unlock();
@@ -237,8 +320,8 @@ class Lock    // for multiple read-access and exclusive write-access to a resour
 // ======================================================================================
 
 inline int GetTID(void) { return syscall(SYS_gettid); }                       // return Thread ID (not Process ID) of the caller
-inline int GetPID(void) { return getpid(); }
-inline int GetParentPID(void) { return getppid(); }
+inline int GetPID(void) { return getpid(); }                                  // return the process ID of the calling process
+inline int GetParentPID(void) { return getppid(); }                           // return the process ID of the parent process
 
 class Thread
 { private:
@@ -261,7 +344,17 @@ class Thread
      int Ret=pthread_join(ID, &ExitStatus);
      ID=0; return Ret; }
 
-   int Join(void *&ExitStatus)                                 // wait for the thread to terminate/complete
+   int Join(int Timeout)
+   { struct timespec Time;
+     Time.tv_sec=Timeout;
+     Time.tv_nsec=0;
+     void *ExitStatus;
+     if(ID==0) return -1;                                      // ID zero - a thread is not running anymore ?
+     int Ret=pthread_timedjoin_np(ID, &ExitStatus, &Time);
+     if(Ret==0) ID=0;
+     return Ret; }
+
+   int Join(void *&ExitStatus)                                 // wait for the thread to terminate
    { if(ID==0) return -1;                                      // ID zero - a thread is NOT running anymore ?
      int Ret=pthread_join(ID, &ExitStatus);                    // give back its termination status
      ID=0; return Ret; }                                       // not clear how to behave if an error occures.

@@ -78,7 +78,7 @@ template <class Float> // scale floating-point data to 8-bit gray scale image
 class RF_Acq                                    // acquire wideband (1MHz) RF data thus both OGN frequencies at same time
 { public:
    int    SampleRate;                           // [Hz] sampling rate
-
+   int    Bandwidth;                            // [Hz] tuner bandwidth
    int    OGN_CenterFreq;                       // [Hz] Center frequency when not using the hopping plan
    int    OGN_GainMode;                         // 0=Auto, 1=Manual, 2=Linearity, 3=Sensitivity
    int    OGN_Gain;                             // [0.1dB] Rx gain for OGN reception
@@ -118,7 +118,11 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
    int                     OGN_SaveRawData;
    MessageQueue<Socket *>  RawDataQueue;               // sockets send to this queue should be written with a most recent raw data
    MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
+#ifdef USE_FFTSG
+   DFTsg<float>            SpectrogramFFT;             // FFT to create spectrograms
+#else
    DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
+#endif
    int                     SpectrogramFFTsize;         // FFT size for the spectrogram
    float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
    SampleBuffer< std::complex<float> > SpectraBuffer;  //
@@ -145,8 +149,9 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
     return 0.5*CountLifeTimeSlots/(Now-StartTime); }
 
   void Config_Defaults(void)
-  { SampleRate=1000000;
-    OGN_CenterFreq = 0;
+  { SampleRate = getCPUs()>=2 ? 2000000:1000000;
+    Bandwidth =      0;
+    OGN_CenterFreq = 0;                                                     // [Hz] decide based on the FreqPlan
     OGN_StartTime=0.350; OGN_SamplesPerRead=(900*SampleRate)/1000;
     OGN_GainMode=1; OGN_Gain=600;
     HoppingPlan.setPlan(0);
@@ -183,12 +188,24 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
     config_lookup_int(Config,   "RF.OGN.SaveRawData",   &OGN_SaveRawData);
     double Freq = 0; config_lookup_float_or_int(Config, "RF.OGN.CenterFreq", &Freq); OGN_CenterFreq=(int)floor(Freq*1e6+0.5);
 
-    SampleRate=1000000;
+    // SampleRate=1000000;
     if(config_lookup_int(Config, "RF.OGN.SampleRate", &SampleRate)!=CONFIG_TRUE)
     { double Rate;
       if(config_lookup_float(Config, "RF.OGN.SampleRate", &Rate)==CONFIG_TRUE) SampleRate=(int)floor(1e6*Rate+0.5);
-      else if(config_lookup_int(Config, "RF.SampleRate", &SampleRate)!=CONFIG_TRUE)
-      { if(config_lookup_float(Config, "RF.SampleRate", &Rate)==CONFIG_TRUE) SampleRate=(int)floor(1e6*Rate+0.5); }
+      else
+      { if(config_lookup_int(Config, "RF.SampleRate", &SampleRate)!=CONFIG_TRUE)
+        { if(config_lookup_float(Config, "RF.SampleRate", &Rate)==CONFIG_TRUE) SampleRate=(int)floor(1e6*Rate+0.5); }
+      }
+    }
+
+    Bandwidth=0;
+    if(config_lookup_int(Config, "RF.OGN.Bandwidth", &Bandwidth)!=CONFIG_TRUE)
+    { double Band;
+      if(config_lookup_float(Config, "RF.OGN.Bandwidth", &Band)==CONFIG_TRUE) Bandwidth=(int)floor(1e6*Band+0.5);
+      else
+      { if(config_lookup_int(Config, "RF.Bandwidth", &Bandwidth)!=CONFIG_TRUE)
+        { if(config_lookup_float(Config, "RF.Bandwidth", &Band)==CONFIG_TRUE) Bandwidth=(int)floor(1e6*Band+0.5); }
+      }
     }
 
     double InpGain= 60.0; config_lookup_float_or_int(Config, "RF.OGN.Gain",         &InpGain); OGN_Gain=(int)floor(InpGain*10+0.5);
@@ -370,7 +387,8 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\
          if(SDR.Open(Index, CurrCenterFreq, SampleRate)<0)                    // try to open it
          { printf("RF_Acq.Exec() ... SDR.Open(%d, , ) fails, retry after 1 sec\n", Index); usleep(1000000); }
          else
-         { SDR.setOffsetTuning(OffsetTuning);
+         { if(Bandwidth) SDR.setTunerBandwidth(Bandwidth);
+           SDR.setOffsetTuning(OffsetTuning);
            if(BiasTee>=0) SDR.setBiasTee(BiasTee);
            SDR.setTunerGainMode(OGN_GainMode);
            SDR.setTunerGain(OGN_Gain);
@@ -384,6 +402,7 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\
 
    int calcCenterFreq(uint32_t Time)
    { if(OGN_CenterFreq) return OGN_CenterFreq;
+     if(HoppingPlan.Plan<=1) return SampleRate>=1500000 ? 868800000:868300000;
      int HopFreq[4];
      HopFreq[0] = HoppingPlan.getFrequency(Time, 0, 0); // 1st slot, Flarm
      HopFreq[1] = HoppingPlan.getFrequency(Time, 0, 1); // 1st slot, OGN
@@ -507,7 +526,11 @@ template <class Float>
 #ifdef USE_RPI_GPU_FFT
    RPI_GPU_FFT      FFT;
 #else
-   DFT1d<Float>     FFT;
+#ifdef USE_FFTSG
+   DFTsg<Float>     FFT;
+#else
+   DFT1d<Float>     FFT;                         // FFTsg is slower on Intel but same fast on ARM
+#endif
 #endif
    Float           *Window;
 
@@ -523,10 +546,10 @@ template <class Float>
    { Window=0; this->RF=RF; this->Filter=Filter; Preset(); OutPipe=(-1); Config_Defaults(); }
 
    void Config_Defaults(void)
-   { strcpy(OutPipeName, "ogn-rf.fifo"); }
+   { strcpy(OutPipeName, "localhost:50010"); }
 
    int Config(config_t *Config)
-   { const char *PipeName = "ogn-rf.fifo";
+   { const char *PipeName = "localhost:50010";
      config_lookup_string(Config, "RF.PipeName",   &PipeName);
      strcpy(OutPipeName, PipeName);
      return 0; }
@@ -534,7 +557,7 @@ template <class Float>
    int Preset(void) { return Preset(RF->SampleRate); } // preset for configured sampling rate
 
    int Preset(int SampleRate)                          // preset for given RF sampling rate
-   { FFTsize = (8*8*SampleRate)/15625; // (8*8*SampleRate)/15625;
+   { FFTsize = (4*8*SampleRate)/15625;                 // 4096 for 2MHz and 2048 for 1MHz sample rate (8*8*SampleRate)/15625;
      FFT.PresetForward(FFTsize);
      Window=(Float *)realloc(Window, FFTsize*sizeof(Float));
      FFT.SetSineWindow(Window, FFTsize, (Float)(1.0/sqrt(FFTsize)) );
@@ -647,7 +670,11 @@ template <class Float>
    RF_Acq *RF;                                      // pointer to the RF acquisition
 
    int              FFTsize;
+#ifdef USE_FFTSG
+   DFTsg<Float>     FFT;
+#else
    DFT1d<Float>     FFT;
+#endif
    Float           *Window;
 
    SampleBuffer< std::complex<Float> > Spectra;     // (complex) spectra
@@ -854,6 +881,7 @@ template <class Float>
    GSM_FFT<Float>     *GSM;
    char                Host[32];  // Host name
    char     ConfigFileName[PATH_MAX];
+   int ClientSendTimeout;
 
   public:
    HTTP_Server(RF_Acq *RF, Inp_FFT<Float> *OGN, GSM_FFT<Float> *GSM)
@@ -863,7 +891,8 @@ template <class Float>
 
    void Config_Defaults(void)
    { ConfigFileName[0]=0;
-     Port=8080; }
+     Port=8080;
+     ClientSendTimeout=30; }
 
    int Config(config_t *Config)
    { config_lookup_int(Config, "HTTP.Port", &Port); return 0; }
@@ -888,9 +917,9 @@ template <class Float>
        printf("HTTP_Server.Exec() ... Listening on port %d\n", Port);
        while(1)
        { Socket *Client = new Socket; SocketAddress ClientAddress;
-         if(Listen.Accept(*Client, ClientAddress)<0) { printf("HTTP_Server.Exec() ... Cannot accept()\n"); sleep(1); break; }
+         if(Listen.Accept(*Client, ClientAddress)<0) { printf("HTTP_Server.Exec() ... Cannot accept()\n"); delete Client; sleep(1); break; }
          printf("HTTP_Server.Exec() ... Client from %s\n", ClientAddress.getIPColonPort());
-         Client->setReceiveTimeout(2.0); Client->setSendTimeout(20.0); Client->setLinger(1, 5);
+         Client->setReceiveTimeout(2.0); Client->setSendTimeout(ClientSendTimeout); Client->setLinger(1, 5);
          SocketBuffer Request; time_t ConnectTime; time(&ConnectTime);
          while(1)
          { if(Client->Receive(Request)<0) { printf("HTTP_Server.Exec() ... Cannot receive()\n"); Client->SendShutdown(); Client->Close(); delete Client; Client=0; break; }
@@ -1031,6 +1060,7 @@ Refresh: 5\r\n\
      if(RF->DeviceSerial[0])
        dprintf(Client->SocketFile, "<tr><td>RF.DeviceSerial</td><td align=right><b>%s</b></td></tr>\n",               RF->DeviceSerial);
      dprintf(Client->SocketFile, "<tr><td>RF.SampleRate</td><td align=right><b>%3.1f MHz</b></td></tr>\n",       1e-6*RF->SampleRate);
+     if(RF->Bandwidth) dprintf(Client->SocketFile, "<tr><td>RF.Bandwidth</td><td align=right><b>%3.1f MHz</b></td></tr>\n",       1e-6*RF->Bandwidth);
      // dprintf(Client->SocketFile, "<tr><td>RF.PipeName</td><td align=right><b>%s</b></td></tr>\n",                  ??->OutPipeName );
      dprintf(Client->SocketFile, "<tr><td>RF.FreqCorr</td><td align=right><b>%+3d ppm</b></td></tr>\n",              RF->FreqCorr);
      if(RF->FreqRaster)

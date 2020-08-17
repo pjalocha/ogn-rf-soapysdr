@@ -49,6 +49,15 @@ class TCP_DataServer
 
    int Clients(void) const { return Client.size(); }
 
+   int ReceiveQueue(int Idx)
+   { int Bytes;
+     if(ioctl(Client[Idx], FIONREAD, &Bytes)<0) return -1;
+     return Bytes; }
+
+   int Receive(char *Message, int MaxLen, int Idx)
+   { if(Client[Idx]<0) return -1;
+     return recv(Client[Idx], Message, MaxLen, MSG_NOSIGNAL); }
+
    int Accept(void)
    { int Count=0;
      for( ; ; )

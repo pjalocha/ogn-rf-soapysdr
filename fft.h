@@ -22,6 +22,7 @@
 #define __FFT_H__
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <math.h>
 
 // #include <cmath> // for M_PI in C++11 - no, does not work
@@ -73,6 +74,66 @@ template <class Float>
 
 // ===========================================================================================
 
+#ifdef USE_NE10
+#include <NE10.h>
+
+class DFTne
+{ public:
+   // static int ne10_init_done;
+   std::complex<float>   *InpBuffer; // input buffer
+   std::complex<float>   *OutBuffer; // output buffer
+   ne10_fft_cfg_float32_t Cfg;       // configuration
+   int                    Size;      // [FFT points]
+   int                    Sign;      // forward or backward (inverse)
+
+   DFTne() { InpBuffer=0; OutBuffer=0; Size=0; Sign=0; }
+
+  ~DFTne() { Free(); }
+
+   void Free(void)
+   { if(InpBuffer) { free(InpBuffer); InpBuffer=0; }
+     if(OutBuffer) { free(OutBuffer); OutBuffer=0; }
+     if(Size) ne10_fft_destroy_c2c_float32(Cfg);
+     Size=0; Sign=0; }
+
+   int Preset(int Size, int Sign=0)
+   { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
+     // printf("DFTne(%d, %d) ...\n", Size, Sign);
+     // if(!ne10_init_done)
+     // { if(ne10_init()!=NE10_OK) return -1;  // initialize Ne10 (global call)
+     //   else ne10_init_done=1; }
+     if(this->Size==0) { if(ne10_init()!=NE10_OK) return -1; }
+     // printf("DFTne(%d, %d) ...\n", Size, Sign);
+     Free();
+     InpBuffer = (std::complex<float> *)malloc(Size*sizeof(std::complex<float>)); if(InpBuffer==0) return -1;
+     OutBuffer = (std::complex<float> *)malloc(Size*sizeof(std::complex<float>)); if(OutBuffer==0) return -1;
+     // printf("DFTne(%d, %d) ...\n", Size, Sign);
+     Cfg = ne10_fft_alloc_c2c_float32(Size);
+     // printf("DFTne(%d, %d) ...\n", Size, Sign);
+     this->Size=Size; this->Sign=Sign; return Size; }
+
+   std::complex<float> *Input (void) const { return InpBuffer; }
+   std::complex<float> *Output(void) const { return OutBuffer; }
+
+  template <class Type>
+   static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
+   { for(int Idx=0; Idx<WindowSize; Idx++)
+     { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
+   }
+
+   int PresetForward (int Size) { return Preset(Size, 0); }
+   int PresetBackward(int Size) { return Preset(Size, 1); }
+
+   void Execute(void)
+   { ne10_fft_c2c_1d_float32((ne10_fft_cpx_float32_t *)OutBuffer,
+                             (ne10_fft_cpx_float32_t *)InpBuffer,
+                             Cfg, Sign); }
+} ;
+
+#endif // NE10
+
+// ===========================================================================================
+
 template <class Float>
  class DFTsg
 { public:
@@ -83,7 +144,7 @@ template <class Float>
    int                  Sign;   // forward or backward (inverse)
 
   public:
-   DFTsg() { Buffer=0; Size=0; Sign=0; }
+   DFTsg() { Buffer=0; Size=0; Sign=0; IP=0; W=0; }
 
   ~DFTsg() { Free(); }
 
@@ -104,6 +165,9 @@ template <class Float>
 
    int PresetForward (int Size) { return Preset(Size, -1); }
    int PresetBackward(int Size) { return Preset(Size, +1); }
+
+   std::complex<Float> *Input (void) const { return Buffer; }
+   std::complex<Float> *Output(void) const { return Buffer; }
 
   template <class Type>
    static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
@@ -145,6 +209,9 @@ template <class Float>
 
    int PresetForward(int Size) { return Preset(Size, FFTW_FORWARD); }
    int PresetBackward(int Size) { return Preset(Size, FFTW_BACKWARD); }
+
+   std::complex<Float> *Input (void) const { return Buffer; }
+   std::complex<Float> *Output(void) const { return Buffer; }
 
   template <class Type>
    static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
@@ -188,6 +255,9 @@ template <>
   int PresetForward(int Size) { return Preset(Size, FFTW_FORWARD); }
   int PresetBackward(int Size) { return Preset(Size, FFTW_BACKWARD); }
 
+   std::complex<float> *Input (void) const { return Buffer; }
+   std::complex<float> *Output(void) const { return Buffer; }
+
   template <class Type>
    static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
   { for(int Idx=0; Idx<WindowSize; Idx++)
@@ -196,7 +266,7 @@ template <>
 
   std::complex<float>& operator [] (int Idx) { return Buffer[Idx]; }  // access to input/output buffer
 
-  void Execute(void) { return fftwf_execute(Plan); }
+  void Execute(void) { fftwf_execute(Plan); }
 
   void PrintPlan(void) { fftwf_print_plan(Plan); printf("\n"); }
 

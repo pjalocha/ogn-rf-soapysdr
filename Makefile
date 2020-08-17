@@ -1,10 +1,10 @@
 VERSION := 0.2.7
 
-# use the GPU on the classical Raspberry Pi
+# use or not the GPU on the classical Raspberry Pi
 # USE_RPI_GPU_FFT = 1
 
-# use the GPU through the cfFFT OpenCL library
-# USE_CLFFT = 1
+# use the FFTsg as an alternative to FFTw3, FFTsg seems a little faster on ARM then FFTw3 but on Intel/AMD fftw3 is faster
+USE_FFTSG = 1
 
 FLAGS = -Wall -Wno-misleading-indentation -O2 # -ffast-math -g # -std=c++11 -O2 -ffast-math # -O3 ?
 LIBS  = -lpthread -lm -ljpeg -lconfig -lrt
