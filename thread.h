@@ -333,10 +333,12 @@ class Thread
 
    void setExec( void *(*Function)(void *)) { Exec=Function; } // set the function to run by this thread
 
-   int Create(void *Context=0)                                 // create (start) this thread
+   int Create(const char* name, void *Context=0)               // create (start) this thread
    { if(Exec==0) return -1;                                    // Exec function not set
      if(ID) return -1;                                         // ID non-zero - a thread is running ?
-     return pthread_create(&ID, 0, Exec, Context); }
+     int Ret=pthread_create(&ID, 0, Exec, Context);
+     if(!Ret) pthread_setname_np(ID, name);
+     return Ret; }
 
    int Join(void)
    { void *ExitStatus;
