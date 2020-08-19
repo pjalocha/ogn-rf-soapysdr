@@ -257,7 +257,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
    int QueueSize(void) { return OutQueueCS16.Size(); }
 
-   int Start(void) { StopReq=0; return Thr.Create("RF_Acq", this); }
+   int Start(void) { StopReq=0; return Thr.Create(this, "RF_Acq"); }
    int Stop(void)  { StopReq=1; return Thr.Join(); }
 
    static void *ThreadExec(void *Context)
@@ -666,7 +666,7 @@ template <class Float>
     return 0; }
 
    void Start(void)
-   { StopReq=0; Thr.setExec(ThreadExec); Thr.Create("Inp_FFT", this); }
+   { StopReq=0; Thr.setExec(ThreadExec); Thr.Create(this, "Inp_FFT"); }
    void Stop(void)
    { StopReq=1; Thr.Cancel(); Thr.Join(); }
 
@@ -811,7 +811,7 @@ template <class Float>
 
    void Start(void)
    { if(Port<=0) return;
-     Thr.setExec(ThreadExec); Thr.Create("HTTP_Server", this); }
+     Thr.setExec(ThreadExec); Thr.Create(this, "HTTP_Server"); }
 
   ~HTTP_Server()
    { if(Port) Thr.Cancel(); }

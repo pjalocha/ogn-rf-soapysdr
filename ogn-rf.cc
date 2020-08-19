@@ -281,7 +281,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
    int QueueSize(void) { return OutQueue.Size(); }
 
-   int Start(void) { StopReq=0; return Thr.Create("RF_Acq", this); }
+   int Start(void) { StopReq=0; return Thr.Create(this, "RF_Acq"); }
    int Stop(void)  { StopReq=1; return Thr.Join(); }
 
    static void *ThreadExec(void *Context)
@@ -459,7 +459,7 @@ template <class Float>
 
    int QueueSize(void) { return OutQueue.Size(); }
    void Start(void)
-   { StopReq=0; Thr.setExec(ThreadExec); Thr.Create("Inp_Filter", this); }
+   { StopReq=0; Thr.setExec(ThreadExec); Thr.Create(this, "Inp_Filter"); }
 
   ~Inp_Filter()
    { Thr.Cancel(); }
@@ -614,7 +614,7 @@ template <class Float>
     return 0; }
 
    void Start(void)
-   { StopReq=0; Thr.setExec(ThreadExec); Thr.Create("Inp_FFT", this); }
+   { StopReq=0; Thr.setExec(ThreadExec); Thr.Create(this, "Inp_FFT"); }
 
   ~Inp_FFT()
    { Thr.Cancel();
@@ -705,7 +705,7 @@ template <class Float>
      return 1; }
 
    void Start(void)
-   { StopReq=0; Thr.setExec(ThreadExec); Thr.Create("GSM_FFT", this); }
+   { StopReq=0; Thr.setExec(ThreadExec); Thr.Create(this, "GSM_FFT"); }
 
   ~GSM_FFT()
    { Thr.Cancel();
@@ -899,7 +899,7 @@ template <class Float>
 
    void Start(void)
    { if(Port<=0) return;
-     Thr.setExec(ThreadExec); Thr.Create("HTTP_Server", this); }
+     Thr.setExec(ThreadExec); Thr.Create(this, "HTTP_Server"); }
 
   ~HTTP_Server()
    { if(Port) Thr.Cancel(); }
