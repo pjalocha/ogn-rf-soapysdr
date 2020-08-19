@@ -51,6 +51,12 @@ GPU_SRC   = mailbox.c gpu_fft.c gpu_fft_base.c gpu_fft_twiddles.c gpu_fft_shader
 LIBS += -ldl
 endif
 
+ifdef USE_FFTSG
+FLAGS += -DUSE_FFTSG
+else
+LIBS += -lfftw3 -lfftw3f
+endif
+
 ifdef USE_CLFFT
 GPU_FLAGS = -DUSE_CLFFT
 LIBS += -lOpenCL -lclFFT
@@ -60,15 +66,15 @@ FLAGS += -DVERSION=$(VERSION).$(ARCH)
 
 all:    ogn-rf-soapysdr ogn-rf
 
-ogn-rf:	Makefile ogn-rf.cc rtlsdr.h thread.h fft.h buffer.h image.h sysmon.h pulsefilter.h tonefilter.h boxfilter.h serialize.h socket.h freqplan.h
-	g++ $(FLAGS) $(GPU_FLAGS) -o ogn-rf ogn-rf.cc format.cpp serialize.cpp $(GPU_SRC) $(LIBS) -lrtlsdr -lfftw3 -lfftw3f
+ogn-rf:       Makefile ogn-rf.cc rtlsdr.h thread.h fft.h buffer.h image.h sysmon.h pulsefilter.h tonefilter.h boxfilter.h serialize.h socket.h freqplan.h
+	g++ $(FLAGS) $(GPU_FLAGS) -o ogn-rf ogn-rf.cc format.cpp serialize.cpp fftsg_float.cpp $(GPU_SRC) $(LIBS) -lrtlsdr
 ifdef USE_RPI_GPU_FFT
 	sudo chown root ogn-rf
 	sudo chmod a+s  ogn-rf
 endif
 
 ogn-rf-soapysdr:	Makefile ogn-rf-soapysdr.cc thread.h fft.h buffer.h image.h sysmon.h serialize.h socket.h freqplan.h
-	g++ $(FLAGS) $(GPU_FLAGS) -o ogn-rf-soapysdr ogn-rf-soapysdr.cc format.cpp serialize.cpp $(GPU_SRC) $(LIBS) -lSoapySDR -lfftw3 -lfftw3f
+	g++ $(FLAGS) $(GPU_FLAGS) -o ogn-rf-soapysdr ogn-rf-soapysdr.cc format.cpp serialize.cpp fftsg_float.cpp $(GPU_SRC) $(LIBS) -lSoapySDR
 ifdef USE_RPI_GPU_FFT
 	sudo chown root ogn-rf-soapysdr
 	sudo chmod a+s  ogn-rf-soapysdr
