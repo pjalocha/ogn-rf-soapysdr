@@ -316,7 +316,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
              if(OGN_SaveRawData>0)
              { time_t Time=(time_t)floor(Buffer->Time);
                struct tm *TM = gmtime(&Time);
-               char FileName[32]; sprintf(FileName, "%s_%04d.%02d.%02d.u8", FilePrefix, 1900+TM->tm_year, TM->tm_mon+1, TM->tm_mday);
+               char FileName[33]; sprintf(FileName, "%s_%04d.%02d.%02d.u8", FilePrefix, (uint16_t)(1900+TM->tm_year), (uint8_t)(TM->tm_mon+1), (uint8_t)TM->tm_mday);
                FILE *File=fopen(FileName, "ab");
                if(File)
                { Serialize_WriteSync(File, OGN_RawDataSync);
