@@ -55,6 +55,21 @@ template <class Float> // scale floating-point data to 8-bit gray scale image
 
 // ==================================================================================================
 
+static char DefaultCall[12] = { 0 };
+
+static int setDefaultCall(const char *Prefix=0)
+{ if(Prefix==0) Prefix="OGR";
+  int PrefLen=strlen(Prefix);
+  uint64_t Serial = getCPUserial();
+  if(Serial==0) Serial = getMAC("eth0");
+  if(Serial==0) Serial = getMAC("wlan0");
+  if(Serial==0) return 0;
+  memcpy(DefaultCall, Prefix, PrefLen);
+  Format_Hex(DefaultCall+PrefLen, Serial, 9-PrefLen);
+  DefaultCall[9]=0; return 1; }
+
+// ==================================================================================================
+
 class RF_Acq                                    // acquire wideband (1MHz) RF data thus both OGN frequencies at same time
 { public:
    char   Driver[16];                           // SoapySDR driver name
@@ -150,6 +165,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
   int Config(config_t *Config)
   { const char *Call=0;
+    if(DefaultCall[0]) Call=DefaultCall;
     config_lookup_string(Config,"APRS.Call", &Call);
     if(Call) strcpy(FilePrefix, Call);
 
@@ -280,7 +296,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      SDR = SoapySDRDevice_make(&args);
      SoapySDRKwargs_clear(&args);
      if(SDR==0)
-     { printf("Can't open SoapySDR: driver=%s => %s\n", Driver, SoapySDRDevice_lastError()); return 0; }
+     { printf("Cannot open SoapySDR: driver=%s => %s\n", Driver, SoapySDRDevice_lastError()); StopReq=1; return 0; }
      // printf("Open SoapySDR: driver=%s\n", Driver);
 
      if(Setting[0])
@@ -963,6 +979,7 @@ Refresh: 5\r\n\
        dprintf(Client->SocketFile, "<tr><td>RF.FreqPlan</td><td align=right><b>%d: %s</b></td></tr>\n",   RF->HoppingPlan.Plan, RF->HoppingPlan.getPlanName() );
      dprintf(Client->SocketFile, "<tr><td>RF.Driver</td><td align=right><b>%s</b></td></tr>\n",           RF->Driver);
      dprintf(Client->SocketFile, "<tr><td>RF.Antenna</td><td align=right><b>%s</b></td></tr>\n",           RF->Antenna);
+     dprintf(Client->SocketFile, "<tr><td>RF.Channel</td><td align=right><b>%d</b></td></tr>\n",           RF->Channel);
      // if(RF->DeviceSerial[0])
      //   dprintf(Client->SocketFile, "<tr><td>RF.DeviceSerial</td><td align=right><b>%s</b></td></tr>\n",               RF->DeviceSerial);
      dprintf(Client->SocketFile, "<tr><td>RF.SampleRate</td><td align=right><b>%5.3f MHz</b></td></tr>\n",       1e-6*RF->SampleRate);

@@ -83,6 +83,56 @@ int getCpuUsage(int &DiffTotal, int &DiffUser, int &DiffSystem) // get CPU usage
 Error:
   fclose(File); return -1; }
 
+static uint64_t getMAC(const char *Iface = "eth0")
+{ char Name[64]; sprintf(Name, "/sys/class/net/%s/address", Iface);
+  FILE *File = fopen(Name, "rt"); if(File==0) return 0;
+  int Addr[6];
+  if(fscanf(File,"%02X:%02X:%02X:%02X:%02X:%02X", Addr, Addr+1, Addr+2, Addr+3, Addr+4, Addr+5)!=6) { fclose(File); return 0; }
+  fclose(File);
+  uint64_t MAC=0;
+  for(int Idx=0; Idx<6; Idx++)
+  { MAC<<=8; MAC|=Addr[Idx]; }
+  return MAC; }
+
+static uint64_t getCPUserial(void)
+{ FILE *File = fopen("/proc/cpuinfo", "rt"); if(File==0) return 0;
+  uint64_t Serial=0;
+  char Line[256];
+  for( ; ; )
+  { if(fgets(Line, 256, File)==0) break;
+    if(strchr(Line, '\n')==0) break;
+    if(memcmp(Line, "Serial", 6)) continue;
+    if(Line[6]>' ') continue;
+    const char *Colon = strchr(Line, ':'); if(Colon==0) continue;
+    // printf("%s", Line);
+    // sscanf(Colon+1, "%llX", &Serial); }
+    Serial = strtoll(Colon+1, 0, 16); }
+  fclose(File);
+  return Serial; }
+
+static int getCPUinfo(uint64_t *Serial=0, char *Model=0, char *Hardware=0, char *Revision=0)
+{ FILE *File = fopen("/proc/cpuinfo", "rt"); if(File==0) return 0;
+  char Line[256];
+  for( ; ; )
+  { if(fgets(Line, 256, File)==0) break;
+    if(strchr(Line, '\n')==0) break;
+    char *Colon = strchr(Line, ':'); if(Colon==0) continue;
+    char *EOL = strchr(Colon, '\n'); if(EOL==0) continue;
+    *EOL=0;
+    // printf("%s\n", Line);
+    if(Serial   && memcmp(Line, "Serial",   6)==0)
+    { *Serial = strtoll(Colon+2, 0, 16); }
+    if(Model    && memcmp(Line, "Model",    5)==0)
+    { strcpy(Model, Colon+2); }
+    if(Hardware && memcmp(Line, "Hardware", 8)==0)
+    { strcpy(Hardware, Colon+2); }
+    if(Revision && memcmp(Line, "Revision", 8)==0)
+    { strcpy(Revision, Colon+2); }
+  }
+  fclose(File);
+  return 1; }
+
+/*
 int getCpuSerial(long long int &SerialNumber) // get the CPU serial number
 { FILE *File=fopen("/proc/cpuinfo","rt"); if(File==0) return -1;
   char Line[128];
@@ -94,6 +144,7 @@ int getCpuSerial(long long int &SerialNumber) // get the CPU serial number
   fclose(File); return 0;
 Error:
   fclose(File); return -1; }
+*/
 
 int getCpuUsage(void)                       // get CPU usage - initialize
 { int DiffTotal, DiffUser, DiffSystem; return getCpuUsage(DiffTotal, DiffUser, DiffSystem); }
