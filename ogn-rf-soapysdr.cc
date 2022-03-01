@@ -300,7 +300,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      if(BiasTee>=0)
        SoapySDRKwargs_set(&args, "bias_tee", BiasTee>0?"true":"false");
      if(DriverArg[0])
-     { char *Key = Setting;
+     { char *Key = DriverArg;
        for( ; ; )
        { char *End=strchr(Key, ','); if(End) *End=0;
          char *Value = strchr(Key, '=');
