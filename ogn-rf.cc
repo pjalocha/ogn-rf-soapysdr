@@ -29,6 +29,7 @@
 #include <libconfig.h>
 
 #include <algorithm>
+#include <map>
 
 #include "thread.h"     // multi-thread stuff
 #include "fft.h"        // Fast Fourier Transform
@@ -75,13 +76,36 @@ template <class Float> // scale floating-point data to 8-bit gray scale image
 
 // ==================================================================================================
 
+static char DefaultCall[12] = { 0 };
+
+static int setDefaultCall(const char *Prefix=0)
+{ if(Prefix==0) Prefix="OGR";
+  int PrefLen=strlen(Prefix);
+  uint64_t Serial = getCPUserial();
+  if(Serial==0) Serial = getMAC("eth0");
+  if(Serial==0) Serial = getMAC("wlan0");
+  if(Serial==0) return 0;
+  memcpy(DefaultCall, Prefix, PrefLen);
+  Format_Hex(DefaultCall+PrefLen, Serial, 9-PrefLen);
+  DefaultCall[9]=0; return 1; }
+
+// ==================================================================================================
+
 class RF_Acq                                    // acquire wideband (1MHz) RF data thus both OGN frequencies at same time
 { public:
    int    SampleRate;                           // [Hz] sampling rate
    int    Bandwidth;                            // [Hz] tuner bandwidth
    int    OGN_CenterFreq;                       // [Hz] Center frequency when not using the hopping plan
+
    int    OGN_GainMode;                         // 0=Auto, 1=Manual, 2=Linearity, 3=Sensitivity
    int    OGN_Gain;                             // [0.1dB] Rx gain for OGN reception
+   int    OGN_GainIdx;                          // [0.. ] index in the RTLSDR gain table
+   float  OGN_MinNoise;                         // [dB] lower noise limit for automatic gain step up/down
+   float  OGN_MaxNoise;                         // [dB] upper noise limit
+
+   int    OGN_GainBackOff;                      // [sec] back-off counter for noise measurements
+   std::map<int, float> NoiseMap;               // noise measurement for various gains
+
    double OGN_StartTime;                        // [sec] when to start acquisition on the center frequency
    int    OGN_SamplesPerRead;                   // [samples] should correspond to about 800 ms of data and be a multiple of 256
                                                 // the goal is to listen on center frequency from 0.4 to 1.2 sec
@@ -120,8 +144,12 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
    MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
 #ifdef USE_FFTSG
    DFTsg<float>            SpectrogramFFT;             // FFT to create spectrograms
-#else
+#endif
+#ifdef USE_FFTW3
    DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
+#endif
+#ifdef WITH_AVFFT
+   DFTav<float>            SpectrogramFFT;             // FFT to create spectrograms
 #endif
    int                     SpectrogramFFTsize;         // FFT size for the spectrogram
    float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
@@ -152,17 +180,23 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
   { SampleRate = getCPUs()>=2 ? 2000000:1000000;
     Bandwidth =      0;
     OGN_CenterFreq = 0;                                                     // [Hz] decide based on the FreqPlan
-    OGN_StartTime=0.350; OGN_SamplesPerRead=(900*SampleRate)/1000;
-    OGN_GainMode=1; OGN_Gain=600;
+    OGN_StartTime=0.350; OGN_SamplesPerRead=(900*SampleRate)/1000;          // 0.900sec slot starting at 0.350sec after PPS
+    OGN_GainMode=1; OGN_Gain=600; OGN_GainIdx=(-1); OGN_GainBackOff=0;      // manual gain mode, 60.0dB
+    OGN_MinNoise=0.0; OGN_MaxNoise=10.0;                                    // [dB] noise limits for automatic gain stepping
     HoppingPlan.setPlan(0);
     PulseFilt.Threshold=0;
     DeviceIndex=0; DeviceSerial[0]=0;
     OffsetTuning=0; FreqCorr=0; FreqRaster=28125; BiasTee=(-1);
     // GSM_CenterFreq=GSM_LowEdge+GSM_ScanStep/2; GSM_Scan=1; GSM_SamplesPerRead=(250*SampleRate)/1000; GSM_Gain=200;
-    GSM_CenterFreq=0; GSM_Scan=0; GSM_Gain=200;
+    GSM_CenterFreq=0; GSM_Scan=0; GSM_Gain=200;                             // GSM scan off, GSM gain 20.0dB
     SpectrogramFFTsize=0;
     OGN_SaveRawData=0;
     FilePrefix[0]=0; }
+
+  int config_lookup_float_or_int(config_t *Config, const char *Path, float *Value)
+  { double Val = *Value;
+    int Ret = config_lookup_float_or_int(Config, Path, &Val);
+    *Value = Val; return Ret; }
 
   int config_lookup_float_or_int(config_t *Config, const char *Path, double *Value)
   { int Ret = config_lookup_float(Config, Path, Value); if(Ret==CONFIG_TRUE) return Ret;
@@ -171,6 +205,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
   int Config(config_t *Config)
   { const char *Call=0;
+    if(DefaultCall[0]) Call=DefaultCall;
     config_lookup_string(Config,"APRS.Call", &Call);
     if(Call) strcpy(FilePrefix, Call);
 
@@ -212,6 +247,9 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
            InpGain= 20.0; config_lookup_float_or_int(Config, "RF.GSM.Gain",         &InpGain); GSM_Gain=(int)floor(InpGain*10+0.5);
            Freq  =     0; config_lookup_float_or_int(Config, "RF.GSM.CenterFreq",   &Freq);    GSM_CenterFreq=(int)floor(Freq*1e6+0.5);
            GSM_Scan =  0; config_lookup_int(Config, "RF.GSM.Scan", &GSM_Scan);
+
+    config_lookup_float_or_int(Config, "RF.OGN.MinNoise", &OGN_MinNoise);
+    config_lookup_float_or_int(Config, "RF.OGN.MaxNoise", &OGN_MaxNoise);
 
     int Latitude, Longitude, Altitude;
     int Ret = ReadPosition(Latitude, Longitude, Altitude, Config);
@@ -312,7 +350,9 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
            SDR.ResetBuffer();                                                 // needed before every Read()
            int Read=SDR.Read(*Buffer, SamplesToRead);                         // read the time slot raw RF data
            if(Read>0) // RF data Read() successful
-           { Buffer->Freq += Buffer->Freq * (1e-6*GSM_FreqCorr);                 // correct the frequency (sign ?)
+           { Buffer->Freq += Buffer->Freq * (1e-6*GSM_FreqCorr);              // correct the frequency (sign ?)
+             Buffer->Gain = 0.1*OGN_Gain;
+             Buffer->GainSet = OGN_GainIdx;
              if(OGN_SaveRawData>0)
              { time_t Time=(time_t)floor(Buffer->Time);
                struct tm *TM = gmtime(&Time);
@@ -334,13 +374,26 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%14.3fsec.u8
                Client->Send(Header);
                Client->Send(Buffer->Data, Buffer->Full);
                Client->SendShutdown(); Client->Close(); delete Client; }
-             if(SpectrogramQueue.Size())
-             { SlidingFFT(SpectraBuffer, *Buffer, SpectrogramFFT, SpectrogramWindow);
-               SpectraPower(SpectraPwr, SpectraBuffer);                                         // calc. spectra power
-               float BkgNoise=0.33;
-               LogImage(Image, SpectraPwr, (float)BkgNoise, (float)32.0, (float)32.0);  // make the image
-               JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() ); }         // and into JPEG
-             while(SpectrogramQueue.Size())
+             if(OGN_GainBackOff>0) OGN_GainBackOff--;
+             int NewGainIdx = OGN_GainIdx;
+             if(OGN_GainBackOff==0 || SpectrogramQueue.Size())                              // see if there is a request for spectrogram JPEG
+             { SlidingFFT(SpectraBuffer, *Buffer, SpectrogramFFT, SpectrogramWindow);       // sliding FFT on the raw data
+               SpectraPower(SpectraPwr, SpectraBuffer);                                     // calc. spectra power
+               float RefBkgNoise=0.33;                                                      // 0dB reference noise level (about "quiet input" level)
+               LogImage(Image, SpectraPwr, (float)RefBkgNoise, (float)32.0, (float)32.0);   // convert spectrogram to an image
+               std::nth_element(SpectraPwr.Data, SpectraPwr.Data+SpectraPwr.Full/2, SpectraPwr.Data+SpectraPwr.Full); // sort for median
+               float PwrMedian = SpectraPwr.Data[SpectraPwr.Full/2];                        // median spectra power, but data order is destroyed now
+               Buffer->BkgNoise = sqrt(PwrMedian);
+               if(SpectrogramQueue.Size()) JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );           // compress image into JPEG
+               float BkgNoise_dB = 10.0*log10(PwrMedian/RefBkgNoise);
+               printf("BkgNoise = %3.1fdB, Gain = %3.1fdB [%d]\n", BkgNoise_dB, 0.1*OGN_Gain, OGN_GainIdx);
+               if(OGN_GainIdx>=0)
+               { NoiseMap[OGN_GainIdx]=BkgNoise_dB;
+                      if(BkgNoise_dB<OGN_MinNoise) { if(NewGainIdx<SDR.Gains-1) NewGainIdx++; }
+                 else if(BkgNoise_dB>OGN_MaxNoise) { if(NewGainIdx>0) NewGainIdx--; }
+               }
+               OGN_GainBackOff=15; }
+             while(SpectrogramQueue.Size())                                                 // send spectrogram image to all requesting sockets
              { Socket *Client; SpectrogramQueue.Pop(Client);
          // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
                sprintf(Header, "HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
@@ -351,6 +404,9 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\
                Client->SendShutdown(); Client->Close(); delete Client; }
              if(OutQueue.Size()<4) { OutQueue.Push(Buffer); CountLifeTimeSlots+=LifeSlots; }
                               else { OutQueue.Recycle(Buffer); printf("RF_Acq.Exec() ... Dropped a slot\n"); }
+             if(NewGainIdx!=OGN_GainIdx)
+             { OGN_GainIdx=NewGainIdx; OGN_Gain=SDR.Gain[OGN_GainIdx]; SDR.setTunerGain(OGN_Gain); OGN_GainBackOff=2;
+               printf("Stepped OGN.Gain to %3.1fdB\n", 0.1*OGN_Gain); }
            } else     // RF data Read() failed
            { SDR.Close(); printf("RF_Acq.Exec() ... SDR.Read() failed => SDR.Close()\n"); continue; }
            if(ReadGSM) // if we are to read GSM in the second half-slot
@@ -368,7 +424,9 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\
                                   else { GSM_OutQueue.Recycle(Buffer); printf("RF_Acq.Exec() ... Dropped a GSM batch\n"); }
              }
              SDR.setTunerGainMode(OGN_GainMode);
-             SDR.setTunerGain(OGN_Gain);                // back to OGN reception setup
+             OGN_GainIdx=SDR.getTunerClosestGainIdx(OGN_Gain);
+             if(OGN_GainIdx>=0) OGN_Gain=SDR.Gain[OGN_GainIdx];                     // back to OGN reception setup
+             SDR.setTunerGain(OGN_Gain);
              if(GSM_Scan)
              { GSM_CenterFreq+=GSM_ScanStep;
                if(GSM_CenterFreq>=GSM_UppEdge) GSM_CenterFreq=GSM_LowEdge+GSM_ScanStep/2;
@@ -386,12 +444,15 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%10dsec.jpg\
          SDR.FreqRaster = FreqRaster;
          if(SDR.Open(Index, CurrCenterFreq, SampleRate)<0)                    // try to open it
          { printf("RF_Acq.Exec() ... SDR.Open(%d, , ) fails, retry after 1 sec\n", Index); usleep(1000000); }
-         else
+         else                                                                 // if SDR open succesful
          { if(Bandwidth) SDR.setTunerBandwidth(Bandwidth);
            SDR.setOffsetTuning(OffsetTuning);
            if(BiasTee>=0) SDR.setBiasTee(BiasTee);
            SDR.setTunerGainMode(OGN_GainMode);
+           OGN_GainIdx=SDR.getTunerClosestGainIdx(OGN_Gain);
+           if(OGN_GainIdx>=0) OGN_Gain=SDR.Gain[OGN_GainIdx];
            SDR.setTunerGain(OGN_Gain);
+           OGN_GainBackOff=0;
            SDR.setFreqCorrection(FreqCorr); }
        }
      }
@@ -528,8 +589,12 @@ template <class Float>
 #else
 #ifdef USE_FFTSG
    DFTsg<Float>     FFT;
-#else
+#endif
+#ifdef USE_FFTW3
    DFT1d<Float>     FFT;                         // FFTsg is slower on Intel but same fast on ARM
+#endif
+#ifdef WITH_AVFFT
+   DFTav<Float>     FFT;                         // FFTsg is slower on Intel but same fast on ARM
 #endif
 #endif
    Float           *Window;
@@ -672,8 +737,12 @@ template <class Float>
    int              FFTsize;
 #ifdef USE_FFTSG
    DFTsg<Float>     FFT;
-#else
+#endif
+#ifdef USE_FFTW3
    DFT1d<Float>     FFT;
+#endif
+#ifdef WITH_AVFFT
+   DFTav<Float>     FFT;
 #endif
    Float           *Window;
 
@@ -1078,7 +1147,7 @@ Refresh: 5\r\n\
       dprintf(Client->SocketFile, "<tr><td>RF.OGN.CenterFreq</td><td align=right><b>%5.1f MHz</b></td></tr>\n",   1e-6*RF->OGN_CenterFreq);
      dprintf(Client->SocketFile, "<tr><td>RF.OGN.FFTsize</td><td align=right><b>%d</b></td></tr>\n",                  OGN->FFTsize);
      dprintf(Client->SocketFile, "<tr><td>RF.OGN.GainMode</td><td align=right><b>%d</b></td></tr>\n",                 RF->OGN_GainMode);
-     dprintf(Client->SocketFile, "<tr><td>RF.OGN.Gain</td><td align=right><b>%4.1f dB</b></td></tr>\n",           0.1*RF->OGN_Gain);
+     dprintf(Client->SocketFile, "<tr><td>RF.OGN.Gain</td><td align=right><b>[%d] %4.1f dB</b></td></tr>\n",  RF->OGN_GainIdx, 0.1*RF->OGN_Gain);
      dprintf(Client->SocketFile, "<tr><td>RF.OGN.StartTime</td><td align=right><b>%5.3f sec</b></td></tr>\n",         RF->OGN_StartTime);
      dprintf(Client->SocketFile, "<tr><td>RF.OGN.SensTime</td><td align=right><b>%5.3f sec</b></td></tr>\n", (double)(RF->OGN_SamplesPerRead)/RF->SampleRate);
      dprintf(Client->SocketFile, "<tr><td>RF.OGN.SaveRawData</td><td align=right><b>%d sec</b></td></tr>\n", RF->OGN_SaveRawData);
@@ -1133,6 +1202,8 @@ int SetUserValue(const char *Name, float Value)
     return 1; }
   if(strcmp(Name, "RF.OGN.Gain")==0)
   { RF.OGN_Gain=(int)floor(10*Value+0.5);
+    RF.OGN_GainIdx=RF.SDR.getTunerClosestGainIdx(RF.OGN_Gain);
+    RF.OGN_GainBackOff=0;
     printf("RF.OGN.Gain=%3.1f dB\n", 0.1*RF.OGN_Gain);
     return 1; }
   if(strcmp(Name, "RF.OGN.GainMode")==0)
@@ -1172,12 +1243,17 @@ int PrintUserValues(void)
   if(RF.PulseFilt.Threshold) printf(" .Duty=%3.1fppm", 1e6*RF.PulseFilt.Duty);
   printf("\n");
   printf("RF.OGN.CenterFreq=%7.3f MHz\n", 1e-6*RF.OGN_CenterFreq);
-  printf("RF.OGN.Gain=%3.1f dB\n",         0.1*RF.OGN_Gain);
+  printf("RF.OGN.Gain=%3.1f dB [%d]\n", 0.1*RF.OGN_Gain, RF.OGN_GainIdx);
   printf("RF.OGN.GainMode=%d\n",               RF.OGN_GainMode);
   printf("RF.OGN.SaveRawData=%d\n",            RF.OGN_SaveRawData);
   printf("RF.GSM.CenterFreq=%7.3f MHz\n", 1e-6*RF.GSM_CenterFreq);
   printf("RF.GSM.Scan=%d\n",                   RF.GSM_Scan);
   printf("RF.GSM.Gain=%3.1f dB\n",         0.1*RF.GSM_Gain);
+  if(RF.NoiseMap.size())
+  { printf("Noise:");
+    for(std::map<int, float>::iterator it=RF.NoiseMap.begin(); it!=RF.NoiseMap.end(); ++it)
+    { printf(" %3.1fdB[%d]", it->second, it->first); }
+    printf("\n"); }
   return 0; }
 
 int UserCommand(char *Cmd)
@@ -1208,6 +1284,8 @@ int main(int argc, char *argv[])
 {
   const char *ConfigFileName = "rtlsdr-ogn.conf";
   if(argc>1) ConfigFileName = argv[1];
+
+  setDefaultCall();
 
   config_t Config;
   config_init(&Config);

@@ -148,15 +148,22 @@ class RTLSDR
    int getTunerGain(void)     { return rtlsdr_get_tuner_gain(Device); }
    int getTunerMaxGain(void)  { return Gain[Gains-1]; }
    int getTunerMinGain(void)  { return Gain[      0]; }
-   int getTunerClosestGain(int ReqGain) const
-   { if(Gains==0) return ReqGain;
-     if(ReqGain>=Gain[Gains-1]) return Gain[Gains-1];
-     if(ReqGain<=Gain[      0]) return Gain[      0];
-     int Idx=1;
-     while(ReqGain>Gain[Idx]) Idx++;
+
+   int getTunerClosestGain(int ReqGain) const                         // find the closest gain to the requested one
+   { int Idx=getTunerClosestGainIdx(ReqGain);
+     if(Idx<0) return ReqGain;
+     return Gain[Idx]; }
+
+   int getTunerClosestGainIdx(int ReqGain) const                      // find the closest gain to the requested one
+   { if(Gains==0) return -1;                                          // if table empty then return the same gain
+     if(ReqGain>=Gain[Gains-1]) return Gains-1;                       // if above the max. gain the return max. gain
+     if(ReqGain<=Gain[      0]) return 0;                             // if below the minimum gain then return the minimum gain
+     int Idx=1;                                                       // 
+     while(ReqGain>Gain[Idx]) Idx++;                                  // walk through the table to find the first gain lower or equal
      int D0 = ReqGain-Gain[Idx-1];
      int D1 = Gain[Idx]-ReqGain;
-     return D0<D1 ? Gain[Idx-1]:Gain[Idx]; }
+     if(D0<D1) Idx--;
+     return Idx; }
 /*
      unsigned int Idx=Gains/2;
      unsigned int Step=Idx;
@@ -184,6 +191,9 @@ class RTLSDR
    int setBiasTee(int On=1) { return rtlsdr_set_bias_tee(Device, On); }       // turn on or off the T-bias circuit to power external LNA: never use with DC-shorted antennas !
    // int setBiasTee(int On=1) { return 0; }       // dummy
    // int setBiasTee(int On=1, int Pin=0) { return rtlsdr_set_gpio(Device, On, Pin); }
+
+   int readEEPROM(       uint8_t *Data, uint8_t Ofs, uint16_t Len) { return rtlsdr_read_eeprom(Device, Data, Ofs, Len); }
+   int writeEEPROM(const uint8_t *Data, uint8_t Ofs, uint16_t Len) { return rtlsdr_write_eeprom(Device, (uint8_t *)Data, Ofs, Len); }
 
    double getTime(void) const                                                 // read the system time at this very moment
 #ifndef __MACH__ // _POSIX_TIMERS

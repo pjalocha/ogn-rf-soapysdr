@@ -73,6 +73,7 @@ static int setDefaultCall(const char *Prefix=0)
 class RF_Acq                                    // acquire wideband (1MHz) RF data thus both OGN frequencies at same time
 { public:
    char   Driver[16];                           // SoapySDR driver name
+   char   DriverArg[128];                       // additional parameters to be passed when creating the device by SoapySDR
    // int    DeviceIndex;                          // rtl-sdr device index
    char   Serial[64];                           // serial number of the rtl-sdr device to be selected
    char   Antenna[16];                          // Antenna name like LNAW
@@ -136,6 +137,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
 
    void Config_Defaults(void)
    { strcpy(Driver, "rtlsdr");
+     DriverArg[0]=0;
      Antenna[0]=0;
      Setting[0]=0;
      Channel=0;
@@ -187,6 +189,10 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
     const char *Set = 0;
     config_lookup_string(Config,"RF.Setting",  &Set);
     if(Set) { strncpy(Setting, Set, 128); Setting[127]=0; }
+
+    Set = 0;
+    config_lookup_string(Config,"RF.DriverArg",  &Set);
+    if(Set) { strncpy(DriverArg, Set, 128); DriverArg[127]=0; }
 
     config_lookup_int(Config,   "RF.Channel",        &Channel);
     config_lookup_int(Config,   "RF.FFTsize",        &FFTsize);
@@ -293,6 +299,20 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
        SoapySDRKwargs_set(&args, "serial", Serial);
      if(BiasTee>=0)
        SoapySDRKwargs_set(&args, "bias_tee", BiasTee>0?"true":"false");
+     if(DriverArg[0])
+     { char *Key = Setting;
+       for( ; ; )
+       { char *End=strchr(Key, ','); if(End) *End=0;
+         char *Value = strchr(Key, '=');
+         if(Value)
+         { *Value=0; Value++;
+            SoapySDRKwargs_set(&args, Key, Value);
+            Value--; *Value='=';
+         }
+         if(End==0) break;
+         *End = ','; Key=End+1;
+       }
+     }
      SDR = SoapySDRDevice_make(&args);
      SoapySDRKwargs_clear(&args);
      if(SDR==0)
@@ -303,9 +323,9 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      { printf("Setting:\n");
        char *Key = Setting;
        for( ; ; )
-       { char *End=strchr(Key, ','); if(End) *End=0;
+       { char *End=strchr(Key, ','); if(End) *End=0;         // comma spearates arguments
          printf(" %s\n", Key);
-         char *Value = strchr(Key, '=');
+         char *Value = strchr(Key, '=');                     // equal sign separates Key from Value
          if(Value)
          { *Value=0; Value++;
            if(SoapySDRDevice_writeSetting(SDR, Key, Value) != 0)

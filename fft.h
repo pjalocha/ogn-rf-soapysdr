@@ -29,6 +29,12 @@
 #include <complex>
 #include <new>
 
+#ifdef WITH_AVFFT // needs to install LIBAV
+extern "C" {
+#include <libavcodec/avfft.h>
+}
+#endif
+
 #include "fftsg.h"
 
 #include <fftw3.h>   // for complex input/output FFT
@@ -131,6 +137,125 @@ class DFTne
 } ;
 
 #endif // NE10
+
+// ===========================================================================================
+
+#ifdef WITH_AVFFT
+
+template <class Float>          // works only for float, but not double
+ class rDFTav                    // Real Discrete Fourier Transform
+{ public:
+   Float               *Buffer; // input and output buffer
+   Float               *Window; // 
+   RDFTContext         *Context;
+   int                  Size;   // [FFT points]
+   int                  Sign;   // forward or inverse
+   std::complex<Float> *Output; // input/output buffer in the complex format
+
+  public:
+   rDFTav() { Buffer=0; Context=0; Window=0; Size=0; Sign=0; }
+
+  ~rDFTav() { Free(); }
+
+   void Free(void)
+   { if(Buffer) { free(Buffer); Buffer=0; }
+     if(Window) { free(Window); Window=0; }
+     if(Context) { av_rdft_end(Context); Context=0; }
+     Size=0; Sign=0; }
+
+   int Log2(int Size)
+   { if(Size==0) return -1;
+     int Log=0;
+     for( ; ; )
+     { if(Size&1) break;
+       Size>>=1; Log++; }
+     if(Size!=1) return -1;
+     return Log; }
+
+   int Preset(int Size, int Sign=(-1))         // setup for forward (-1) or inverse (+1) FFT
+   { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
+     Free();
+     int Bits=Log2(Size); if(Bits<0) return -1;
+     Context = av_rdft_init(Bits, Sign<0?DFT_R2C:IDFT_C2R); if(Context==0) return -1;
+     Buffer = (Float *)malloc(Size*sizeof(Float)); if(Buffer==0) return -1;                                 // allocate processing buffer
+     Output = (std::complex<Float> *)Buffer;
+     this->Size=Size; this->Sign=Sign; return Size; }
+
+   int PresetForward(int Size) { return Preset(Size, -1); } // scaling between forward and reverse is Size/2
+   int PresetInverse(int Size) { return Preset(Size, +1); }
+
+   int SetSineWindow(Float Scale=1.0)                              // set classic half-sine window
+   { if(Size==0) return -1;
+     if(Window==0) Window = (Float *)malloc(Size*sizeof(Float));
+     if(Window==0) return -1;
+     SetSineWindow(Window, Size, Scale);
+     return Size; }
+
+  template <class Type>
+   static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
+   { for(int Idx=0; Idx<WindowSize; Idx++)
+     { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
+   }
+
+  void Execute(void) { av_rdft_calc(Context, Buffer); }  // core FFT execute
+
+} ;
+
+template <class Float>          // works only for float, but not double
+ class DFTav                    // Complex Discrete Fourier Transform
+{ public:
+   std::complex<Float> *Buffer; // input and output buffer
+   FFTContext          *Context;
+   int                  Size;   // [FFT points]
+   int                  Sign;   // forward or inverse
+
+  public:
+   DFTav() { Buffer=0; Context=0; Size=0; Sign=0; }
+
+  ~DFTav() { Free(); }
+
+   void Free(void)
+   { if(Buffer) { free(Buffer); Buffer=0; }
+     if(Context) { av_fft_end(Context); Context=0; }
+     Size=0; Sign=0; }
+
+   int Log2(int Size)
+   { if(Size==0) return -1;
+     int Log=0;
+     for( ; ; )
+     { if(Size&1) break;
+       Size>>=1; Log++; }
+     if(Size!=1) return -1;
+     return Log; }
+
+   int Preset(int Size, int Sign=(-1))
+   { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
+     Free();
+     int Bits=Log2(Size); if(Bits<0) return -1;
+     Context = av_fft_init(Bits, Sign<0?0:1); if(Context==0) return -1;
+     Buffer = (std::complex<Float> *)malloc(Size*sizeof(std::complex<Float>)); if(Buffer==0) return -1;
+     this->Size=Size; this->Sign=Sign; return Size; }
+
+   int PresetForward(int Size) { return Preset(Size, -1); }
+   int PresetInverse(int Size) { return Preset(Size, +1); }
+
+   std::complex<Float> *Input (void) const { return Buffer; }
+   std::complex<Float> *Output(void) const { return Buffer; }
+
+  template <class Type>
+   static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
+   { for(int Idx=0; Idx<WindowSize; Idx++)
+     { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
+   }
+
+  std::complex<Float>& operator [] (int Idx) { return Buffer[Idx]; }  // access to input/output buffer
+
+  void Execute(                          void) { av_fft_permute(Context, (FFTComplex *)Buffer); av_fft_calc(Context, (FFTComplex *)Buffer); }
+  void Process(std::complex<Float> *ExtBuffer) { av_fft_permute(Context, (FFTComplex *)Buffer); av_fft_calc(Context, (FFTComplex *)ExtBuffer); }
+
+} ;
+
+#endif // WITH_AVFFT
 
 // ===========================================================================================
 

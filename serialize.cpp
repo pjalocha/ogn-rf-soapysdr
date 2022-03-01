@@ -16,7 +16,8 @@ int Serialize_ReadData (int Stream, void *Data, int Bytes)
   return Done; }
 
 int Serialize_FindSync(int Stream, uint32_t Sync)                                                // find the Sync word in the stream
-{ uint32_t Buffer=0; if(read(Stream, &Buffer, sizeof(uint32_t))!=sizeof(uint32_t)) return -1;    // read the very first word
+{ uint32_t Buffer=0;
+  if(read(Stream, &Buffer, sizeof(uint32_t))!=sizeof(uint32_t)) return -1;                       // read the very first word
   if(Buffer==Sync) return 0;                                                                     // if this is our Sync then we are there !
   int Total=0;                                                                                   // Sync not found immediately: we need to skip data and hunt for it
   for( ; ; )
@@ -27,8 +28,10 @@ int Serialize_FindSync(int Stream, uint32_t Sync)                               
   return Total; }                                                                                // return the number of skipped bytes
 
 int Serialize_FindSync(FILE *Stream, uint32_t Sync)
-{ uint32_t Buffer=0; if(fread(&Buffer, 1, sizeof(uint32_t), Stream)!=sizeof(uint32_t)) return -1;
+{ uint32_t Buffer=0;
+  if(fread(&Buffer, 1, sizeof(uint32_t), Stream)!=sizeof(uint32_t)) return -1;
   if(Buffer==Sync) return 0;
+  // printf("_FindSync() %08X <=> %08X\n", Buffer, Sync);
   int Total=0;
   for( ; ; )
   { uint8_t Byte; if(fread(&Byte, 1, 1, Stream)!=1) return -1;

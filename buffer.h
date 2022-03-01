@@ -47,7 +47,9 @@ template <class Type>
        union
        { uint32_t Flags;
          struct
-         { bool TimeValid: 1;
+         { uint8_t GainSet  : 8;
+           uint32_t         :23;
+           bool TimeValid   : 1;
          } ;
        } ;
 
@@ -61,9 +63,11 @@ template <class Type>
        uint32_t Date;   // [sec] integer part of Time to keep precision
        uint32_t Index;  // Sample index/counter
        float BkgNoise;  // Estimate of the background noise
-       float     Gain;
+       float     Gain;  // [dB(m)]
        uint32_t UncompressedSize;
-       uint32_t CompressionMethod;
+       uint8_t CompressSource; // 0 = ADC, 1 = ADC-DC, 2 = I/Q
+       uint8_t CompressMethod; // 0
+       uint16_t Margin;        // overlap margin between succesive buffers
      } ;
    } ;
 
@@ -75,8 +79,8 @@ template <class Type>
   ~SampleBuffer() { Free(); }
 
    void Print(void) const
-   { printf("%dx%d(x%d) Rx#%d: %5.3fMHz %5.3fMsps %5.3fs, Size=%d, Full=%d Date:Time=%u:%8.6fs, Index:%10u\n",
-            Samples(), Len, sizeof(Type), RxID, 1e-6*Freq, 1e-6*Rate, Samples()/Rate, Size, Full, Date, Time, Index); }
+   { printf("%dx%d(x%d) Rx#%d: %5.3fMHz %5.3fMsps %5.3fs %+3.1fdB, Size=%d, Full=%d Date:Time=%u%+9.6fs, Index:%10u\n",
+            Samples(), Len, sizeof(Type), RxID, 1e-6*Freq, 1e-6*Rate, Samples()/Rate, Gain, Size, Full, Date, Time, Index); }
 
 /*
    void Free(void) { if(Data) delete [] Data; Data=0; Size=0; Full=0; }
@@ -87,13 +91,17 @@ template <class Type>
      Data = new (std::nothrow) Type [NewSize]; if(Data==0) { Size=0; Full=0; return Size; }
      Size=NewSize; return Size; }
 */
-   void Free(void) { if(Data) free(Data); Data=0; Size=0; Full=0; }
+   void Free(void)
+   { // printf("SampleBuffer<%010lXx%d>::Free()\n", (long)this, (int)sizeof(Type));
+     if(Data) free(Data);
+     Data=0; Size=0; Full=0; }
 
    int Allocate(int32_t NewSize)
    { // printf("SampleBuffer::Allocate(%d) Size=%d\n", NewSize, Size);
      if(NewSize<=Size) return Size; // for timing eficiency: do not reallocate if same or bigger size already allocated
      // Free();
      Data = (Type *)realloc(Data, NewSize*sizeof(Type)); if(Data==0) { Size=0; return Size; }
+     // printf("SampleBuffer<%010lXx%d>::Allocate(%d)\n", (long)this, (int)sizeof(Type), NewSize);
      Size=NewSize; return Size; }
 
    int Allocate(int NewLen, int Samples)
@@ -106,19 +114,40 @@ template <class Type>
    Type *Sample(int Idx) { return Data + Idx*Len; }
 
    template <class OtherType>                                  // allocate after another SampleBuffer
+    int Allocate(const SampleBuffer<OtherType> *Buffer)
+   { return Allocate(*Buffer); }
+
+   template <class OtherType>                                  // allocate after another SampleBuffer
     int Allocate(const SampleBuffer<OtherType> &Buffer)
    { Allocate(Buffer.Size);
      Len  = Buffer.Len;
      Rate = Buffer.Rate;
      Date = Buffer.Date;
      Time = Buffer.Time;
+     Index = Buffer.Index;
      RxID = Buffer.RxID;
      Freq = Buffer.Freq;
+     Gain = Buffer.Gain;
+     Flags = Buffer.Flags;
      BkgNoise = Buffer.BkgNoise;
      return Size; }
 
-   void Set(Type Value=0)
-   { Type *DataPtr=Data; for(int Idx=0; Idx<Size; Idx++) (*DataPtr++)=Value; }
+   int calcDataIdx(uint32_t RefDate, double RefTime)
+   { double TimeOfs=RefDate; TimeOfs-=Date; TimeOfs+=RefTime-Time;
+     return floor(TimeOfs*Rate+0.5); }
+
+   void Set(Type Value)
+   { for(int Idx=0; Idx<Size; Idx++) Data[Idx]=Value; }
+
+   void Set(Type Value, int SetSize)
+   { for(int Idx=0; Idx<SetSize; Idx++) Data[Idx]=Value; }
+
+   void Decimate(int DecimRate)
+   { if(Len!=1) return;
+     int OutIdx=0;
+     for(int Idx=0; Idx<Full; Idx+=DecimRate)
+     { Data[OutIdx++] = Data[Idx]; }
+     Rate/=DecimRate; Full=OutIdx; }
 
    double Average(void) const
    { double Sum=0;
@@ -264,6 +293,15 @@ template <class Type>
      Bytes=Serialize_WriteData(File,  Data, Full*sizeof(Type)); if(Bytes<0) return -1;
      Total+=Bytes;
      return Total; }
+
+  template <class StreamType>
+   int DeserializeHeader(StreamType File)
+   { return Serialize_ReadData(File, Header, HeaderSize*sizeof(uint32_t)); }         // returns number of bytes or negative for error
+
+  template <class StreamType>
+   int DeserializeData(StreamType File)
+   { if(Allocate(Full)==0) return -2;
+     return Serialize_ReadData(File,  Data, Full*sizeof(Type)); }                    // returns number of bytes or negative for error
 
   template <class StreamType>
    int Deserialize(StreamType File)  // read SampleBuffer from a file/socket

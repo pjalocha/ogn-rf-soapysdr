@@ -12,7 +12,8 @@ void Format_Bytes( void (*Output)(char), const uint8_t *Bytes, uint8_t Len)
 }
 
 void Format_String( void (*Output)(char), const char *String)
-{ for( ; ; )
+{ if(String==0) return;
+  for( ; ; )
   { uint8_t ch = (*String++); if(ch==0) break;
 #ifdef WITH_AUTOCR
     if(ch=='\n') (*Output)('\r');
@@ -21,7 +22,8 @@ void Format_String( void (*Output)(char), const char *String)
 }
 
 uint8_t Format_String(char *Out, const char *String)
-{ uint8_t OutLen=0;
+{ if(String==0) return 0;
+  uint8_t OutLen=0;
   for( ; ; )
   { char ch = (*String++); if(ch==0) break;
 #ifdef WITH_AUTOCR
@@ -32,7 +34,8 @@ uint8_t Format_String(char *Out, const char *String)
   return OutLen; }
 
 void Format_String( void (*Output)(char), const char *String, uint8_t MinLen, uint8_t MaxLen)
-{ if(MaxLen<MinLen) MaxLen=MinLen;
+{ if(String==0) return;
+  if(MaxLen<MinLen) MaxLen=MinLen;
   uint8_t Idx;
   for(Idx=0; Idx<MaxLen; Idx++)
   { char ch = String[Idx]; if(ch==0) break;
@@ -45,7 +48,8 @@ void Format_String( void (*Output)(char), const char *String, uint8_t MinLen, ui
 }
 
 uint8_t Format_String(char *Out, const char *String, uint8_t MinLen, uint8_t MaxLen)
-{ if(MaxLen<MinLen) MaxLen=MinLen;
+{ if(String==0) return 0;
+  if(MaxLen<MinLen) MaxLen=MinLen;
   uint8_t OutLen=0;
   uint8_t Idx;
   for(Idx=0; Idx<MaxLen; Idx++)
@@ -61,6 +65,9 @@ uint8_t Format_String(char *Out, const char *String, uint8_t MinLen, uint8_t Max
 
 void Format_Hex( void (*Output)(char), uint8_t Byte )
 { (*Output)(HexDigit(Byte>>4)); (*Output)(HexDigit(Byte&0x0F)); }
+
+void Format_HexBytes( void (*Output)(char), const uint8_t *Byte, uint8_t Bytes)
+{ for(uint8_t Idx=0; Idx<Bytes; Idx++) Format_Hex(Output, Byte[Idx]); }
 
 void Format_Hex( void (*Output)(char), uint16_t Word )
 { Format_Hex(Output, (uint8_t)(Word>>8)); Format_Hex(Output, (uint8_t)Word); }
@@ -100,6 +107,24 @@ void Format_HHMMSS(void (*Output)(char), uint32_t Time)
   uint32_t Sec=DayTime;
   uint32_t HHMMSS = 10000*Hour + 100*Min + Sec;
   Format_UnsDec(Output, HHMMSS, 6); }
+
+void Format_Period(void (*Output)(char), int32_t Time)
+{ if(Time<0) { (*Output)('-'); Time=(-Time); }
+        else { (*Output)(' '); }
+  if(Time<60) { (*Output)(' '); Format_UnsDec(Output, (uint32_t)Time, 2); (*Output)('s'); return; }
+  if(Time<3600) { Format_UnsDec(Output, (uint32_t)Time/60, 2); (*Output)('m'); Format_UnsDec(Output, (uint32_t)Time%60, 2); return; }
+  if(Time<86400) { Format_UnsDec(Output, (uint32_t)Time/3600, 2); (*Output)('h'); Format_UnsDec(Output, ((uint32_t)Time%3600)/60, 2); return; }
+  Format_UnsDec(Output, (uint32_t)Time/86400, 2); (*Output)('d'); Format_UnsDec(Output, ((uint32_t)Time%86400)/3600, 2); }
+
+uint8_t Format_Period(char *Out, int32_t Time)
+{ uint8_t Len=0;
+  if(Time<0) { Out[Len++]='-'; Time=(-Time); }
+        else { Out[Len++]=' '; }
+  if(Time<60) { Out[Len++]=' '; Len+=Format_UnsDec(Out+Len, (uint32_t)Time, 2); Out[Len++]='s'; return Len; }
+  if(Time<3600) { Len+=Format_UnsDec(Out+Len, (uint32_t)Time/60, 2); Out[Len++]='m'; Len+=Format_UnsDec(Out+Len, (uint32_t)Time%60, 2); return Len; }
+  if(Time<86400) { Len+=Format_UnsDec(Out+Len, (uint32_t)Time/3600, 2); Out[Len++]='h'; Len+=Format_UnsDec(Out+Len, ((uint32_t)Time%3600)/60, 2); return Len; }
+  Len+=Format_UnsDec(Out+Len, (uint32_t)Time/86400, 2); Out[Len++]='d'; Len+=Format_UnsDec(Out+Len, ((uint32_t)Time%86400)/3600, 2);
+  return Len; }
 
 void Format_UnsDec( void (*Output)(char), uint16_t Value, uint8_t MinDigits, uint8_t DecPoint)
 { uint16_t Base; uint8_t Pos;
@@ -184,12 +209,26 @@ uint8_t Format_SignDec(char *Out, int32_t Value, uint8_t MinDigits, uint8_t DecP
 uint8_t Format_Hex( char *Output, uint8_t Byte )
 { (*Output++) = HexDigit(Byte>>4); (*Output++)=HexDigit(Byte&0x0F); return 2; }
 
+uint8_t Format_HexBytes(char *Output, const uint8_t *Byte, uint8_t Bytes)
+{ uint8_t Len=0;
+  for(uint8_t Idx=0; Idx<Bytes; Idx++)
+    Len+=Format_Hex(Output+Len, Byte[Idx]);
+  return Len;  }
+
 uint8_t Format_Hex( char *Output, uint16_t Word )
-{ Format_Hex(Output, (uint8_t)(Word>>8)); Format_Hex(Output+2, (uint8_t)Word); return 4; }
+{ Format_Hex(Output, (uint8_t)(Word>>8));
+  Format_Hex(Output+2, (uint8_t)Word);
+  return 4; }
 
 uint8_t Format_Hex( char *Output, uint32_t Word )
-{ Format_Hex(Output  , (uint8_t)(Word>>24)); Format_Hex(Output+2, (uint8_t)(Word>>16));
-  Format_Hex(Output+4, (uint8_t)(Word>> 8)); Format_Hex(Output+6, (uint8_t) Word     ); return 8; }
+{ Format_Hex(Output  , (uint16_t)(Word>>16));
+  Format_Hex(Output+4, (uint16_t)(Word    ));
+  return 8; }
+
+uint8_t Format_Hex( char *Output, uint64_t Word )
+{ Format_Hex(Output  , (uint32_t)(Word>>32));
+  Format_Hex(Output+8, (uint32_t)(Word    ));
+  return 16; }
 
 uint8_t Format_Hex( char *Output, uint32_t Word, uint8_t Digits)
 { for(uint8_t Idx=Digits; Idx>0; )
@@ -245,10 +284,15 @@ int16_t Read_Dec3(const char *Inp)             // convert three digit decimal nu
   int8_t Low=Read_Dec1(Inp[2]);  if(Low<0) return -1;
   return (int16_t)Low + (int16_t)10*(int16_t)Mid + (int16_t)100*(int16_t)High; }
 
-int16_t Read_Dec4(const char *Inp)             // convert three digit decimal number into an integer
+int16_t Read_Dec4(const char *Inp)             // convert four digit decimal number into an integer
 { int16_t High=Read_Dec2(Inp  ); if(High<0) return -1;
   int16_t Low =Read_Dec2(Inp+2); if(Low<0) return -1;
   return Low + (int16_t)100*(int16_t)High; }
+
+int32_t Read_Dec5(const char *Inp)             // convert four digit decimal number into an integer
+{ int16_t High=Read_Dec2(Inp  ); if(High<0) return -1;
+  int16_t Low =Read_Dec3(Inp+2); if(Low<0) return -1;
+  return (int32_t)Low + (int32_t)1000*(int32_t)High; }
 
 // ------------------------------------------------------------------------------------------
 

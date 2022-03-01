@@ -57,7 +57,7 @@ class FreqPlan
    uint32_t getFreqFANET(uint32_t Time)
    { if(Plan<=1) return BaseFreq;                                          // Europe and default is 868.2MHz
      uint32_t Freq1 = getFrequency(Time, 0, 0);
-     if(Plan==5) return Freq1;                                             // for 434MHz is same as "FLARM", which is never used there
+     if(Plan==6) return Freq1;                                             // for 434MHz is same as "FLARM", which is never used there
      uint32_t Freq2 = getFrequency(Time, 0, 1);
      return (Freq1+Freq2)/2; }                                             // other hopping systems is half-way between FLARM and OGN
 
