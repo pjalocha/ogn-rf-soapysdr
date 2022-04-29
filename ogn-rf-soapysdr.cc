@@ -1112,6 +1112,8 @@ int main(int argc, char *argv[])
   const char *ConfigFileName = "rtlsdr-ogn.conf";
   if(argc>1) ConfigFileName = argv[1];
 
+  setDefaultCall();                                  // sef default APRS call in case the config does not contain it
+
   config_t Config;
   config_init(&Config);
   if(config_read_file(&Config, ConfigFileName)==CONFIG_FALSE)
