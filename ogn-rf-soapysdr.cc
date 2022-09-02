@@ -523,6 +523,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      }
 
      SoapySDRDevice_deactivateStream(SDR, Stream, 0, 0); // ( , , flags, timeNs)                  // stop streaming
+     SoapySDRDevice_closeStream(SDR, Stream);
      SoapySDRDevice_unmake(SDR);
      printf("RF_Acq.Exec() ... Stop\n");
      StopReq=1;
