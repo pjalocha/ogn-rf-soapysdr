@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <string.h>
+#include <math.h>
 
 #include "fft.h"
 #include "r2fft.h"
@@ -47,8 +48,9 @@ template <class Type>
        union
        { uint32_t Flags;
          struct
-         { uint8_t GainSet  : 8;
-           uint32_t         :23;
+         { uint8_t GainSet  : 8;  // gain set when acuiring RF data
+           uint8_t IdxClock : 8;  // sample closk to which Index ix counting
+           uint32_t         :15;
            bool TimeValid   : 1;
          } ;
        } ;
@@ -79,7 +81,7 @@ template <class Type>
   ~SampleBuffer() { Free(); }
 
    void Print(void) const
-   { printf("%dx%d(x%d) Rx#%d: %5.3fMHz %5.3fMsps %5.3fs %+3.1fdB, Size=%d, Full=%d Date:Time=%u%+9.6fs, Index:%10u\n",
+   { printf("%dx%d(x%d) Rx#%u: %5.3fMHz %5.3fMsps %5.3fs %+3.1fdB, Size=%u, Full=%u Date:Time=%u%+9.6fs, Index:%10u\n",
             Samples(), Len, sizeof(Type), RxID, 1e-6*Freq, 1e-6*Rate, Samples()/Rate, Gain, Size, Full, Date, Time, Index); }
 
 /*
@@ -110,6 +112,7 @@ template <class Type>
    int Samples(void) const { return Full/Len; }                // number of samples
    Type *SamplePtr(int Idx) const { return Data+Idx*Len; }     // pointer to an indexed sample
    Type &operator [](int Idx) { return Data[Idx]; }            // reference to an indexed value
+   Type &operator [](int Idx) const { return Data[Idx]; }      // reference to an indexed value
 
    Type *Sample(int Idx) { return Data + Idx*Len; }
 
@@ -251,7 +254,7 @@ template <class Type>
      fprintf(File, "# %d x %d, Time=%17.6fsec, Freq=%10.6fMHz, Rate=%8.6fMHz\n", Samples(), Len, Date+Time, 1e-6*Freq, 1e-6*Rate);
      for(int Idx=StartIdx; Idx<Full; Idx++)
      { if((Idx-StartIdx)>=Values) break;
-       fprintf(File, "%8d: %+12.6f\n", Idx, Data[Idx] ); }
+       fprintf(File, "%8d: %+14.6f\n", Idx, Data[Idx] ); }
      fclose(File); return Size; }
 
    int WriteComplexPlotFile(const char *FileName, int StartIdx=0, int Values=0) const
@@ -263,12 +266,12 @@ template <class Type>
      { if((Idx-StartIdx)>=Values) break;
        double I = Data[Idx].real();
        double Q = Data[Idx].imag();
-       fprintf(File, "%8d: %12.6f %+12.6f %+12.6f %12.6f %+9.3f\n",
+       fprintf(File, "%8d: %12.3f %+14.6f %+14.6f %14.6f %+12.3f\n",
              Idx, 1e6*(Idx-StartIdx)/Rate, I, Q, sqrt(I*I+Q*Q), (180/M_PI)*atan2(Q, I) ); }
      fclose(File); return Size; }
 
   template <class StreamType>
-   int Serialize(StreamType File) // write SampleBuffer to a file/socket
+   int Serialize(StreamType File) const // write SampleBuffer to a file/socket
    { int Total=0, Bytes;
      Bytes=Serialize_WriteData(File, Header, HeaderSize*sizeof(uint32_t)); if(Bytes<0) return -1;
      Total+=Bytes;
@@ -315,6 +318,12 @@ template <class Type>
      Bytes=Serialize_ReadData(File,  Data, Full*sizeof(Type)); if(Bytes<0) return -1;
      Total+=Bytes;
      return Total; }
+
+   // int Write(const char *FileName)
+   // { FILE *File=fopen(FileName, "wb"); if(File==0) return 0;
+   //   int Ret=Write(File);
+   //   fclose(FILE);
+   //   return Ret; }
 
    int Write(FILE *File) // write all samples onto a binary file (with header)
    { if(fwrite(Header, HeaderSize*sizeof(uint32_t), 1, File)!=1) return -1;
@@ -433,6 +442,7 @@ template <class Float, class FFTtype> // do sliding FFT over a buffer of (comple
     Output.Index= Input.Index; }
   Output.Rate = Input.Rate/WindowSize2;
   Output.Len  = WindowSize;
+  Output.Flags= Input.Flags;
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
   Output.Freq = Input.Freq;
@@ -539,6 +549,8 @@ template <class BuffType, class DataType>
   Out1[0].imag(Buff[HalfSize].imag());
 }
 
+#ifdef USE_FFTW3
+
 template <class Float> // do sliding FFT over a buffer of (real signed 16-bit) samples, produce (float/double complex) spectra
  int SlidingFFT(SampleBuffer< std::complex<Float> > &Output, const SampleBuffer<int16_t> &Input,
                 DFT1d<Float> &FwdFFT, Float *Window, Float InpBias=0)
@@ -548,6 +560,8 @@ template <class Float> // do sliding FFT over a buffer of (real signed 16-bit) s
   // printf("SlidingFFT() %d point FFT, %d input samples\n", FwdFFT.Size, InpSamples);
   Output.Allocate((InpSamples/WindowSize2+2)*WindowSize2); Output.Len=WindowSize2;     // output is rows of spectral data
   Output.Rate = Input.Rate/WindowSize2;
+  Output.Index= Input.Index;
+  Output.Flags= Input.Flags;
   Output.Time = Input.Time;
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
@@ -611,6 +625,8 @@ template <class Float> // do sliding FFT over a buffer of (real signed 16-bit) s
   Output.Full=Slides*WindowSize2;
   return Slides; }
 
+#endif // USE_FFTW3
+
 // --------------------------------------------------------------------------------------------------
 
 // template <class Float> // do sliding FFT over a buffer of int16_t complex samples, produce (float/double complex) spectra
@@ -625,6 +641,8 @@ template <class Float, class FFTtype> // do sliding FFT over a buffer of int16_t
   // printf("SlidingFFT() %d point FFT, %d input samples\n", FwdFFT.Size, InpSamples);
   Output.Allocate((InpSamples/WindowSize2+1)*WindowSize); Output.Len=WindowSize;         // output is rows of spectral data
   Output.Rate = Input.Rate/WindowSize2;
+  Output.Flags= Input.Flags;
+  Output.Index= Input.Index;
   Output.Time = Input.Time;
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
@@ -632,23 +650,23 @@ template <class Float, class FFTtype> // do sliding FFT over a buffer of int16_t
   std::complex<int16_t> *InpData = Input.Data;
   std::complex<Float> *OutData = Output.Data;
   int Slides=0;
-  { std::complex<Float> *Buffer = FwdFFT.Buffer;                  // first slide is special
+  { std::complex<Float> *Buffer = FwdFFT.Input();                   // first slide is special
     for( int Bin=0; Bin<WindowSize2; Bin++) { Buffer[Bin] = 0; }    // half the window is empty
     for( int Bin=WindowSize2; Bin<WindowSize; Bin++)                // the other half contains the first input samples
     { Buffer[Bin] = std::complex<Float>(Window[Bin]*real(InpData[Bin-WindowSize2]), Window[Bin]*imag(InpData[Bin-WindowSize2])); }
-    FwdFFT.Execute();                                             // execute FFT
+    FwdFFT.Execute();                                               // execute FFT
     memcpy(OutData, Buffer+WindowSize2, WindowSize2*sizeof(std::complex<Float>)); OutData+=WindowSize2;  // copy spectra into the output buffer
     memcpy(OutData, Buffer,             WindowSize2*sizeof(std::complex<Float>)); OutData+=WindowSize2;  // swap around the two halfs
     Slides++; }
   for( ; InpSamples>=WindowSize; InpSamples-=WindowSize2)           // now the following slides
-  { std::complex<Float> *Buffer = FwdFFT.Buffer;
+  { std::complex<Float> *Buffer = FwdFFT.Input();
     for( int Bin=0; Bin<WindowSize; Bin++)
     { Buffer[Bin] = std::complex<Float>(Window[Bin]*real(InpData[Bin]), Window[Bin]*imag(InpData[Bin])); }
     FwdFFT.Execute();
     memcpy(OutData, Buffer+WindowSize2, WindowSize2*sizeof(std::complex<Float>)); OutData+=WindowSize2;
     memcpy(OutData, Buffer,             WindowSize2*sizeof(std::complex<Float>)); OutData+=WindowSize2;
     InpData+=WindowSize2; Slides++; }
-  { std::complex<Float> *Buffer = FwdFFT.Buffer;                  // and the last slide: special
+  { std::complex<Float> *Buffer = FwdFFT.Input();                   // and the last slide: special
     for( int Bin=0; Bin<WindowSize2; Bin++)
     { Buffer[Bin] = std::complex<Float>(Window[Bin]*real(InpData[Bin]), Window[Bin]*imag(InpData[Bin])); }
     for( int Bin=WindowSize2; Bin<WindowSize; Bin++)
@@ -676,6 +694,8 @@ template <class Float, class FFTtype> // do sliding FFT over a buffer of float/d
   // printf("SlidingFFT() %d point FFT, %d input samples\n", FwdFFT.Size, InpSamples);
   Output.Allocate(((InpSamples+2*WindowSize)/SlideStep)*WindowSize); Output.Len=WindowSize;         // output is rows of spectral data
   Output.Rate = Input.Rate/SlideStep;
+  Output.Flags= Input.Flags;
+  Output.Index= Input.Index; // +
   Output.Time = Input.Time + (SlideStep-WindowSize2)/Input.Rate;
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
@@ -732,6 +752,8 @@ template <class Float, class FFTtype> // do sliding FFT over a buffer of float/d
   // printf("ReconstrFFT() %d point FFT, %d input samples\n", FwdFFT.Size, InpSlides);
   Output.Allocate(1, (InpSlides+1)*WindowSize2);                                     // output is complex time-linear samples
   Output.Rate = Input.Rate*WindowSize2;
+  Output.Flags= Input.Flags;
+  Output.Index= Input.Index; // -
   Output.Time = Input.Time-1.0/Input.Rate;
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
@@ -774,6 +796,8 @@ template <class Float> // do sliding FFT over a buffer of float/double complex s
   // printf("SlidingFFT() %d point FFT, %d input samples\n", FFT.Size, InpSamples);
   Output.Allocate((InpSamples/WindowSize2+1)*WindowSize); Output.Len=WindowSize;         // output is rows of spectral data
   Output.Rate = Input.Rate/WindowSize2;
+  Output.Flags= Input.Flags;
+  Output.Index= Input.Index;
   Output.Time = Input.Time;
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
@@ -820,6 +844,8 @@ template <class Float> // do sliding FFT over a buffer of float/double complex s
   Output.Allocate(1, (InpSlides+1)*WindowSize2);                                     // output is complex time-linear samples
   Output.Rate = Input.Rate*WindowSize2;
   Output.Time = Input.Time-1.0/Input.Rate;
+  Output.Flags= Input.Flags;
+  Output.Index= Input.Index; // -
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
   Output.Freq = Input.Freq;
@@ -873,6 +899,8 @@ template <class Float> // do sliding FFT over a buffer of float/double complex s
   // printf("SlidingFFT(RPI_GPU_FFT) %d point FFT, %d jobs/GPU, %d input samples\n", FwdFFT.Size, Jobs, InpSamples);
   Output.Allocate((InpSamples/WindowSize2+1)*WindowSize); Output.Len=WindowSize;         // output is rows of spectral data
   Output.Rate = Input.Rate/WindowSize2;
+  Output.Flags= Input.Flags;
+  Output.Index= Input.Index;
   Output.Time = Input.Time;
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
@@ -941,6 +969,8 @@ template <class Float> // do sliding FFT over a buffer of float/double complex s
   // printf("SlidingFFT(clFFT) %d point FFT, %d jobs/GPU, %d input samples\n", FwdFFT.Size, Jobs, InpSamples);
   Output.Allocate((InpSamples/WindowSize2+1)*WindowSize); Output.Len=WindowSize;         // output is rows of spectral data
   Output.Rate = Input.Rate/WindowSize2;
+  Output.Flags= Input.Flags;
+  Output.Index= Input.Index;
   Output.Time = Input.Time;
   Output.Date = Input.Date;
   Output.RxID = Input.RxID;
@@ -997,6 +1027,8 @@ template <class Float> // do sliding FFT over a buffer of float/double complex s
     // printf("SlidingFFT(clFFT) %d point FFT, %d jobs/GPU, %d input samples\n", FwdFFT.Size, Jobs, InpSamples);
     Output.Allocate((InpSamples/WindowSize2+1)*WindowSize); Output.Len=WindowSize;         // output is rows of spectral data
     Output.Rate = Input.Rate/WindowSize2;
+    Output.Flags= Input.Flags;
+    Output.Index= Input.Index;
     Output.Time = Input.Time;
     Output.Date = Input.Date;
     Output.RxID = Input.RxID;

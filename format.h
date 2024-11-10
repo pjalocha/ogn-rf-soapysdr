@@ -16,6 +16,8 @@ void Format_String( void (*Output)(char), const    char *String, uint8_t MinLen,
 void Format_Hex( void (*Output)(char), uint8_t  Byte );
 void Format_Hex( void (*Output)(char), uint16_t Word );
 void Format_Hex( void (*Output)(char), uint32_t Word );
+void Format_Hex( void (*Output)(char), uint64_t Word );
+// void Format_Hex( void (*Output)(char), uint32_t Word, uint8_t Digits);
 void Format_MAC( void (*Output)(char), const uint8_t *MAC, uint8_t Len=6);
 
 void Format_HexBytes( void (*Output)(char), const uint8_t *Byte, uint8_t Bytes);
@@ -34,6 +36,9 @@ uint8_t Format_String(char *Out, const char *String, uint8_t MinLen, uint8_t Max
 
 uint8_t Format_UnsDec (char *Out, uint32_t Value, uint8_t MinDigits=1, uint8_t DecPoint=0);
 uint8_t Format_SignDec(char *Out,  int32_t Value, uint8_t MinDigits=1, uint8_t DecPoint=0, uint8_t NoPlus=0);
+
+uint8_t Format_UnsDec (char *Out, uint64_t Value, uint8_t MinDigits=1, uint8_t DecPoint=0);
+uint8_t Format_SignDec(char *Out,  int64_t Value, uint8_t MinDigits=1, uint8_t DecPoint=0, uint8_t NoPlus=0);
 
 uint8_t Format_Hex(char *Output, uint8_t  Byte );
 uint8_t Format_Hex(char *Output, uint16_t Word );
@@ -120,7 +125,8 @@ template <class Type>
    { Dig=Read_UnsDec(Value, Inp+Len); }
    if(Dig<=0) return Dig;
    Len+=Dig;
-   if(Sign=='-') Value=(-Value); return Len; }
+   if(Sign=='-') Value=(-Value);
+   return Len; }
 
 template <class Type>
  int8_t Read_Float1(Type &Value, const char *Inp)       // read floating point, take just one digit after decimal point

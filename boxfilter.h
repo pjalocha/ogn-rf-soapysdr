@@ -124,7 +124,7 @@ template <class Type, class SumType=Type>
    int   RoundsToRecalc;  // recalc. counter
 
   public:
-   BoxSumFilter() { Size=0; Pipe=0; Clear(); }
+   BoxSumFilter() { Size=0; Pipe=0; Clear(); RoundsPerRecalc=4; }
   ~BoxSumFilter() { Free(); }
    void Free(void) { free(Pipe); Size=0; Pipe=0; }
 

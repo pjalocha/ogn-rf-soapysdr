@@ -29,15 +29,21 @@
 #include <complex>
 #include <new>
 
-#ifdef WITH_AVFFT // needs to install LIBAV
+#ifdef USE_FFTAV // needs to install libavcodec-dev
 extern "C" {
+#include <libavutil/mem.h>
 #include <libavcodec/avfft.h>
 }
 #endif
 
+// #ifdef USE_FFTSG
 #include "fftsg.h"
+// #endif
 
+#ifdef USE_FFTW3
 #include <fftw3.h>   // for complex input/output FFT
+#endif
+
 // #include <rfftw.h>  // for real-only input/output FFT
 
 // ===========================================================================================
@@ -127,8 +133,8 @@ class DFTne
      { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
    }
 
-   int PresetForward (int Size) { return Preset(Size, 0); }
-   int PresetBackward(int Size) { return Preset(Size, 1); }
+   int PresetForward(int Size) { return Preset(Size, 0); }
+   int PresetInverse(int Size) { return Preset(Size, 1); }
 
    void Execute(void)
    { ne10_fft_c2c_1d_float32((ne10_fft_cpx_float32_t *)OutBuffer,
@@ -140,7 +146,7 @@ class DFTne
 
 // ===========================================================================================
 
-#ifdef WITH_AVFFT
+#ifdef USE_FFTAV
 
 template <class Float>          // works only for float, but not double
  class rDFTav                    // Real Discrete Fourier Transform
@@ -157,8 +163,11 @@ template <class Float>          // works only for float, but not double
 
   ~rDFTav() { Free(); }
 
+   void *Malloc(int Size) { return av_malloc(Size); }
+   void  Free(void *Ptr)  {        av_free(Ptr); }
+
    void Free(void)
-   { if(Buffer) { free(Buffer); Buffer=0; }
+   { if(Buffer) { Free(Buffer); Buffer=0; }
      if(Window) { free(Window); Window=0; }
      if(Context) { av_rdft_end(Context); Context=0; }
      Size=0; Sign=0; }
@@ -177,7 +186,7 @@ template <class Float>          // works only for float, but not double
      Free();
      int Bits=Log2(Size); if(Bits<0) return -1;
      Context = av_rdft_init(Bits, Sign<0?DFT_R2C:IDFT_C2R); if(Context==0) return -1;
-     Buffer = (Float *)malloc(Size*sizeof(Float)); if(Buffer==0) return -1;                                 // allocate processing buffer
+     Buffer = (Float *)Malloc(Size*sizeof(Float)); if(Buffer==0) { Free(); return -1; }    // allocate processing buffer
      Output = (std::complex<Float> *)Buffer;
      this->Size=Size; this->Sign=Sign; return Size; }
 
@@ -199,6 +208,18 @@ template <class Float>          // works only for float, but not double
 
   void Execute(void) { av_rdft_calc(Context, Buffer); }  // core FFT execute
 
+  template <class InpType>
+   void ProcessForward(InpType *Input)
+  { for(int Idx=0; Idx<Size; Idx++)
+    { Buffer[Idx] = Window[Idx]*Input[Idx]; }
+    Execute(); }
+
+  template <class InpType>
+   void ProcessForward(InpType *Input, int Step)
+  { for(int Idx=0, InpIdx=0; Idx<Size; Idx++, InpIdx+=Step)
+    { Buffer[Idx] = Window[Idx]*Input[InpIdx]; }
+    Execute(); }
+
 } ;
 
 template <class Float>          // works only for float, but not double
@@ -214,8 +235,11 @@ template <class Float>          // works only for float, but not double
 
   ~DFTav() { Free(); }
 
+   void *Malloc(int Size) { return av_malloc(Size); }
+   void  Free(void *Ptr)  {        av_free(Ptr); }
+
    void Free(void)
-   { if(Buffer) { free(Buffer); Buffer=0; }
+   { if(Buffer) { Free(Buffer); Buffer=0; }
      if(Context) { av_fft_end(Context); Context=0; }
      Size=0; Sign=0; }
 
@@ -229,11 +253,11 @@ template <class Float>          // works only for float, but not double
      return Log; }
 
    int Preset(int Size, int Sign=(-1))
-   { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
+   { if( Context && (Size==this->Size) && (Sign==this->Sign) ) return Size;
      Free();
      int Bits=Log2(Size); if(Bits<0) return -1;
      Context = av_fft_init(Bits, Sign<0?0:1); if(Context==0) return -1;
-     Buffer = (std::complex<Float> *)malloc(Size*sizeof(std::complex<Float>)); if(Buffer==0) return -1;
+     Buffer = (std::complex<Float> *)Malloc(Size*sizeof(std::complex<Float>)); if(Buffer==0) { Free(); return -1; }
      this->Size=Size; this->Sign=Sign; return Size; }
 
    int PresetForward(int Size) { return Preset(Size, -1); }
@@ -250,17 +274,82 @@ template <class Float>          // works only for float, but not double
 
   std::complex<Float>& operator [] (int Idx) { return Buffer[Idx]; }  // access to input/output buffer
 
-  void Execute(                          void) { av_fft_permute(Context, (FFTComplex *)Buffer); av_fft_calc(Context, (FFTComplex *)Buffer); }
-  void Process(std::complex<Float> *ExtBuffer) { av_fft_permute(Context, (FFTComplex *)Buffer); av_fft_calc(Context, (FFTComplex *)ExtBuffer); }
+  void Execute(                          void) { av_fft_permute(Context, (FFTComplex *)   Buffer); av_fft_calc(Context, (FFTComplex *)   Buffer); }
+  void Process(std::complex<Float> *ExtBuffer) { av_fft_permute(Context, (FFTComplex *)ExtBuffer); av_fft_calc(Context, (FFTComplex *)ExtBuffer); }
+  // the above is tricky because the buffer needs a proper alignment and should be allocated with av_malloc()
 
 } ;
 
-#endif // WITH_AVFFT
+#endif // USE_FFTAV
 
 // ===========================================================================================
 
 template <class Float>
- class DFTsg
+ class rDFTsg                    // Real Discrete Fourier Transform
+{ public:
+   Float               *Buffer; // input and output buffer
+   Float               *Window; //
+   int                 *IP;
+   Float                *W;
+   int                  Size;   // [FFT points]
+   int                  Sign;   // forward or inverse
+   std::complex<Float> *Output; // input/output buffer in the complex format
+
+  public:
+   rDFTsg() { Buffer=0; IP=0; W=0; Window=0; Size=0; Sign=0; }
+
+  ~rDFTsg() { Free(); }
+
+   void Free(void)
+   { if(Buffer) { free(Buffer); Buffer=0; }
+     if(Window) { free(Window); Window=0; }
+     if(IP) { free(IP); IP=0; }
+     if(W)  { free(W); W=0; }
+     Size=0; Sign=0; }
+
+   int Preset(int Size, int Sign=(-1))         // setup for forward (-1) or inverse (+1) FFT
+   { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
+     Free();
+     Buffer = (Float *)malloc(Size*sizeof(Float)); if(Buffer==0) return -1;                                 // allocate processing buffer
+     W = (Float *)malloc(Size/2*sizeof(Float)); if(W==0) { Free(); return -1; }                             // allocate coeff. table
+     IP = (int *)malloc((int)floor(2+sqrt((double)Size/2))*sizeof(int)); if(IP==0) { Free(); return -1; }   // allocate index table
+     IP[0]=0;
+     Output = (std::complex<Float> *)Buffer;
+     this->Size=Size; this->Sign=Sign; return Size; }
+
+   int PresetForward(int Size) { return Preset(Size, +1); } // scaling between forward and reverse is Size/2
+   int PresetInverse(int Size) { return Preset(Size, -1); }
+
+   int SetSineWindow(Float Scale=1.0)                              // set classic half-sine window
+   { if(Size==0) return -1;
+     if(Window==0) Window = (Float *)malloc(Size*sizeof(Float));
+     if(Window==0) return -1;
+     SetSineWindow(Window, Size, Scale);
+     return Size; }
+
+  template <class Type>
+   static void SetSineWindow(Type *Window, int WindowSize, Type Scale=1.0)
+   { for(int Idx=0; Idx<WindowSize; Idx++)
+     { Window[Idx]=Scale*sin((M_PI*Idx)/WindowSize); }
+   }
+
+  void Execute(void) { rdft(Size, Sign, Buffer, IP, W); }  // core FFT execute
+
+  template <class InpType>
+   void ProcessFwd(InpType *Input)                         // process forward FFT
+  { for(int Idx=0; Idx<Size; Idx++)                        //
+    { Buffer[Idx] = Window[Idx]*Input[Idx]; }              // multiply Input by Window and place in the processing Buffer
+    Execute(); }                                           // run core execute, spectra now in the processing Buffer
+
+  template <class OutType>
+   void ProcessInv(OutType *Out)
+  {
+  }
+
+};
+
+template <class Float>
+ class DFTsg                    // Complex Discrete Fourier Transform
 { public:
    std::complex<Float> *Buffer; // input and output buffer
    int                 *IP;
@@ -269,9 +358,12 @@ template <class Float>
    int                  Sign;   // forward or backward (inverse)
 
   public:
-   DFTsg() { Buffer=0; Size=0; Sign=0; IP=0; W=0; }
+   DFTsg() { Buffer=0; IP=0; W=0; Size=0; Sign=0; }
 
   ~DFTsg() { Free(); }
+
+   void *Malloc(int Size) { return malloc(Size); }
+   void  Free(void *Ptr)  {        free(Ptr); }
 
    void Free(void)
    { if(Buffer) { free(Buffer); Buffer=0; }
@@ -288,8 +380,8 @@ template <class Float>
      IP[0]=0;
      this->Size=Size; this->Sign=Sign; return Size; }
 
-   int PresetForward (int Size) { return Preset(Size, -1); }
-   int PresetBackward(int Size) { return Preset(Size, +1); }
+   int PresetForward(int Size) { return Preset(Size, -1); }
+   int PresetInverse(int Size) { return Preset(Size, +1); }
 
    std::complex<Float> *Input (void) const { return Buffer; }
    std::complex<Float> *Output(void) const { return Buffer; }
@@ -302,12 +394,14 @@ template <class Float>
 
   std::complex<Float>& operator [] (int Idx) { return Buffer[Idx]; }  // access to input/output buffer
 
-  void Execute(                          void) { cdft(2*Size, Sign, (Float *)Buffer,    IP, W); }
+  void Execute(                          void) { cdft(2*Size, Sign, (Float *)   Buffer, IP, W); }
   void Process(std::complex<Float> *ExtBuffer) { cdft(2*Size, Sign, (Float *)ExtBuffer, IP, W); }
 
 } ;
 
 // ===========================================================================================
+
+#ifdef USE_FFTW3
 
 template <class Float>
  class DFT1d
@@ -322,18 +416,21 @@ template <class Float>
 
   ~DFT1d() { Free(); }
 
+   void *Malloc(int Size) { return fftw_malloc(Size); }
+   void  Free(void *Ptr)  {        fftw_free(Ptr); }
+
    void Free(void)
-   { if(Buffer) { fftw_destroy_plan(Plan); fftw_free(Buffer); Buffer=0; Size=0; Sign=0; } }
+   { if(Buffer) { fftw_destroy_plan(Plan); Free(Buffer); Buffer=0; Size=0; Sign=0; } }
 
    int Preset(int Size, int Sign, bool Fast=1)
    { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
      Free();
-     Buffer = (std::complex<Float> *)fftw_malloc(Size*sizeof(std::complex<Float>)); if(Buffer==0) return -1;
+     Buffer = (std::complex<Float> *)Malloc(Size*sizeof(std::complex<Float>)); if(Buffer==0) return -1;
      Plan = fftw_plan_dft_1d(Size, (fftw_complex *)Buffer, (fftw_complex *)Buffer, Sign, Fast?FFTW_ESTIMATE:FFTW_MEASURE);
      this->Size=Size; this->Sign=Sign; return Size; }
 
    int PresetForward(int Size) { return Preset(Size, FFTW_FORWARD); }
-   int PresetBackward(int Size) { return Preset(Size, FFTW_BACKWARD); }
+   int PresetInverse(int Size) { return Preset(Size, FFTW_BACKWARD); }
 
    std::complex<Float> *Input (void) const { return Buffer; }
    std::complex<Float> *Output(void) const { return Buffer; }
@@ -367,18 +464,21 @@ template <>
 
   ~DFT1d() { Free(); }
 
+   void *Malloc(int Size) { return fftwf_malloc(Size); }
+   void  Free(void *Ptr)  {        fftwf_free(Ptr); }
+
   void Free(void)
-   { if(Buffer) { fftwf_destroy_plan(Plan); fftwf_free(Buffer); Buffer=0; Size=0; Sign=0; } }
+   { if(Buffer) { fftwf_destroy_plan(Plan); Free(Buffer); Buffer=0; Size=0; Sign=0; } }
 
   int Preset(int Size, int Sign, bool Fast=1)
   { if( (Size==this->Size) && (Sign==this->Sign) ) return Size;
     Free();
-    Buffer = (std::complex<float> *)fftwf_malloc(Size*sizeof(std::complex<float>)); if(Buffer==0) return -1;
+    Buffer = (std::complex<float> *)Malloc(Size*sizeof(std::complex<float>)); if(Buffer==0) return -1;
     Plan = fftwf_plan_dft_1d(Size, (fftwf_complex *)Buffer, (fftwf_complex *)Buffer, Sign, Fast?FFTW_ESTIMATE:FFTW_MEASURE);
     this->Size=Size; this->Sign=Sign; return Size; }
 
   int PresetForward(int Size) { return Preset(Size, FFTW_FORWARD); }
-  int PresetBackward(int Size) { return Preset(Size, FFTW_BACKWARD); }
+  int PresetInverse(int Size) { return Preset(Size, FFTW_BACKWARD); }
 
    std::complex<float> *Input (void) const { return Buffer; }
    std::complex<float> *Output(void) const { return Buffer; }
@@ -515,7 +615,7 @@ template <class Float=double>
    int Preset(int Size)
    { // if(Size==WindowSize) return Size;                   // to avoid reallocations
      Free();                                             // deallocate everything
-     if(BwdFFT.PresetBackward(Size)<0) return -1;        // setup forward FFT
+     if(BwdFFT.PresetInverse(Size)<0) return -1;        // setup forward FFT
      WindowSize=Size;
      Input = BwdFFT.Buffer;                              // here the input spectra is to be place
      Window = new (std::nothrow) Float               [WindowSize]; if(Window==0) return -1;
@@ -590,6 +690,113 @@ template <class Float=double>
 
 } ;
 
+#endif // USE_FFTW3
+
+// ===========================================================================================
+// bandwidth-limited oversamplers for real and complex samples
+
+template <class Float, class FFTtype>
+ class rFFToversampler  // FFT-based oversampler for real samples
+{ public:
+   int FFTsize;
+   int Oversample;
+   FFTtype FwdFFT;
+   FFTtype InvFFT;
+
+  public:
+   rFFToversampler()
+   { FFTsize=0; Oversample=0; }
+
+   int Preset(int MaxInpSize, int Oversample)
+  { FFTsize=1;
+    for( ; ; )
+    { FFTsize<<=1;
+      if(MaxInpSize*Oversample<=FFTsize) break; }
+    if(FwdFFT.PresetForward(FFTsize)<0) return -1;
+    if(InvFFT.PresetInverse(FFTsize)<0) return -1;
+    this->Oversample=Oversample;
+    return FFTsize; }
+
+   int Process(Float *Out, const Float *Inp, int InpSize)
+   { for(int Idx=0; Idx<FFTsize; Idx++)
+       FwdFFT.Buffer[Idx]=0;
+     int Ofs = (FFTsize-InpSize*Oversample)/2;
+     float Ampl=2.0f/FFTsize*Oversample;
+     for(int Idx=Ofs, InpIdx=0; InpIdx<InpSize; Idx+=Oversample, InpIdx++)
+       FwdFFT.Buffer[Idx]=Ampl*Inp[InpIdx];
+     FwdFFT.Execute();
+     int SpectrSize=FFTsize/2;
+     // printf("\nFFT[%d]\n", SpectrSize);
+     // for(int Idx=0; Idx<SpectrSize; Idx++)
+     //   printf("%3d: %+6.3f %+6.3f\n", Idx, FwdFFT.Output[Idx].real(), FwdFFT.Output[Idx].imag());
+     int Band = SpectrSize/Oversample;
+     for(int Idx=0; Idx<Band; Idx++)
+       InvFFT.Output[Idx] = FwdFFT.Output[Idx];
+     for(int Idx=Band; Idx<SpectrSize; Idx++)
+       InvFFT.Output[Idx]=0;
+     InvFFT.Buffer[1]=0;
+     // printf("\nFFT[%d]\n", SpectrSize);
+     // for(int Idx=0; Idx<SpectrSize; Idx++)
+     //   printf("%3d: %+6.3f %+6.3f\n", Idx, InvFFT.Output[Idx].real(), InvFFT.Output[Idx].imag());
+     InvFFT.Execute();
+     int OutLen=(InpSize-1)*Oversample+1;
+     for(int Idx=0; Idx<OutLen; Idx++)
+       Out[Idx]=InvFFT.Buffer[Idx+Ofs];
+     return OutLen; }
+
+} ;
+
+template <class Float, class FFTtype>
+ class FFToversampler  // FFT-based oversampler for complex samples
+{ public:
+   int FFTsize;
+   int Oversample;
+   FFTtype FwdFFT;
+   FFTtype InvFFT;
+
+  public:
+   FFToversampler()
+   { FFTsize=0; Oversample=0; }
+
+   int Preset(int MaxInpSize, int Oversample)
+  { FFTsize=1;
+    for( ; ; )
+    { FFTsize<<=1;
+      if(MaxInpSize*Oversample<=FFTsize) break; }
+    if(FwdFFT.PresetForward(FFTsize)<0) return -1;
+    if(InvFFT.PresetInverse(FFTsize)<0) return -1;
+    this->Oversample=Oversample;
+    return FFTsize; }
+
+   int Process(std::complex<Float> *Out, const std::complex<Float> *Inp, int InpSize)
+   { for(int Idx=0; Idx<FFTsize; Idx++)
+       FwdFFT.Buffer[Idx]=0;
+     int Ofs = (FFTsize-InpSize*Oversample)/2;
+     float Ampl=1.0f/FFTsize*Oversample;
+     for(int Idx=Ofs, InpIdx=0; InpIdx<InpSize; Idx+=Oversample, InpIdx++)
+       FwdFFT.Buffer[Idx]=Ampl*Inp[InpIdx];
+     FwdFFT.Execute();
+     // printf("\nFFT[%d]\n", FFTsize);
+     // for(int Idx=0; Idx<FFTsize; Idx++)
+     //   printf("%3d: %+6.3f %+6.3f\n", Idx, FwdFFT.Buffer[Idx].real(), FwdFFT.Buffer[Idx].imag());
+     int Band = FFTsize/Oversample/2;
+     for(int Idx=0; Idx<Band; Idx++)
+       InvFFT.Buffer[Idx] = FwdFFT.Buffer[Idx];
+     for(int Idx=Band; Idx<FFTsize-Band; Idx++)
+       InvFFT.Buffer[Idx]=0;
+     for(int Idx=FFTsize-Band; Idx<FFTsize; Idx++)
+       InvFFT.Buffer[Idx] = FwdFFT.Buffer[Idx];;
+     // printf("\nFFT[%d]\n", FFTsize);
+     // for(int Idx=0; Idx<FFTsize; Idx++)
+     //   printf("%3d: %+6.3f %+6.3f\n", Idx, InvFFT.Buffer[Idx].real(), InvFFT.Buffer[Idx].imag());
+     InvFFT.Execute();
+     int OutLen=(InpSize-1)*Oversample+1;
+     for(int Idx=0; Idx<OutLen; Idx++)
+       Out[Idx]=InvFFT.Buffer[Idx+Ofs];
+     return OutLen; }
+
+} ;
+
 // ===========================================================================================
 
 #ifdef USE_RPI_GPU_FFT     // the following code is Raspberry PI specific
@@ -629,8 +836,8 @@ class RPI_GPU_FFT
      if(Err<0) { FFT=0; Size=0; return Err; } // -1 => firmware not up to date ?, -2 => Size not supported ?, -3 => not enough GPU memory
      this->Size=Size; this->Sign=Sign; this->Jobs=Jobs; return Size; }
 
-   int PresetForward (int Size, int Jobs=32) { return Preset(Size, GPU_FFT_FWD, Jobs); }
-   int PresetBackward(int Size, int Jobs=32) { return Preset(Size, GPU_FFT_REV, Jobs); }
+   int PresetForward(int Size, int Jobs=32) { return Preset(Size, GPU_FFT_FWD, Jobs); }
+   int PresetInverse(int Size, int Jobs=32) { return Preset(Size, GPU_FFT_REV, Jobs); }
 
    std::complex<float> *Input (int Job=0) { return (std::complex<float> *)(FFT->in  + Job*FFT->step); }
    void Execute(void) { gpu_fft_execute(FFT); }

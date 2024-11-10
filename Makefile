@@ -7,7 +7,7 @@ VERSION := 0.2.7
 USE_FFTSG = 1
 
 FLAGS = -Wall -Wno-misleading-indentation -O2 # -ffast-math -g # -std=c++11 -O2 -ffast-math # -O3 ?
-LIBS  = -lpthread -lm -ljpeg -lconfig -lrt
+LIBS  = -lpthread -lm -ljpeg -lpng -lconfig -lrt
 
 # FLAGS += -DNEW_RTLSDR_LIB
 

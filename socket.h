@@ -66,8 +66,14 @@ class SocketAddress                    // IP address and port
    SocketAddress()
      { Init(); }
 
+   bool operator == (const SocketAddress &Other) const
+   { if(Address.sin_family != Other.Address.sin_family) return 0;
+     if(Address.sin_port   != Other.Address.sin_port  ) return 0;
+     return Address.sin_addr.s_addr == Other.Address.sin_addr.s_addr; }
+
    void Init(void)
-     { Address.sin_family = AF_INET; setIP(); }
+     { bzero(&Address, sizeof(Address));
+       Address.sin_family = AF_INET; setIP(); }
 
    // set IP and port from an ASCII string: "IP:port", IP can be numeric or a host name
    int set(const char *HostColonPort)
@@ -144,7 +150,7 @@ class SocketAddress                    // IP address and port
 class SocketBuffer             // data buffer for IP sockets
 { public:
 
-   char *Data;                 //         data storage
+   char  *Data;                //         data storage
    size_t Allocated;           // [bytes] allocated
    size_t Len;                 // [bytes] filled with data
    size_t Done;                // [bytes] processed
@@ -159,7 +165,8 @@ class SocketBuffer             // data buffer for IP sockets
      { Free(); }
 
    void Free(void)
-     { if(Data) { free(Data); Data=0; }
+     { // printf("SocketBuffer::Free() %08lX[%d/%d]\n", (long int)Data, (int)Len, (int)Allocated);
+       if(Data) { free(Data); Data=0; }
        Allocated=0; Len=0; Done=0; }
 
    size_t Relocate(size_t Size)
@@ -167,7 +174,11 @@ class SocketBuffer             // data buffer for IP sockets
        // printf("Relocate(%d)",Size);
        size_t Units=(Size+AllocUnit-1)/AllocUnit; Size=Units*AllocUnit;
        // printf(" => Units=%d, Size=%d\n", Units, Size);
-       Data=(char *)realloc(Data, Size); if(Data==0) Free(); else Allocated=Size;
+       // printf("SocketBuffer::Relocate(%d) %08lX[%d/%d]", (int)Size, (long int)Data, (int)Len, (int)Allocated);
+       Data=(char *)realloc(Data, Size);
+       // printf(" => %08lX[%d/%d]\n", (long int)Data, (int)Len, (int)Size);
+       if(Data==0) Free();
+              else Allocated=Size;
        return Allocated; }
 
    int NullTerm(void)        // put null byte at the end, thus it can be treated as a null-terminated string
@@ -182,9 +193,12 @@ class SocketBuffer             // data buffer for IP sockets
      { return Done==Len; }
 
    int Delete(size_t Ofs, size_t DelLen) // delete some part of the data (involves memory move)
-     { if(Ofs>=Len) return 0;
-       if((Ofs+DelLen)>Len) DelLen=Len-Ofs;
-       memcpy(Data+Ofs, Data+Ofs+DelLen, Len-DelLen); Len-=DelLen;
+     { if(Ofs>=Len) return 0;                               // if Ofs beyond the data there is nothing to do
+       // printf("SocketBuffer::Delete(Ofs:%d, DelLen:%d) %08lX[Len:%d Alloc:%d]", Ofs, DelLen, (long int)Data, (int)Len, (int)Allocated);
+       if((Ofs+DelLen)>Len) DelLen=Len-Ofs;                 // crop the number of bytes to delete
+       memmove(Data+Ofs, Data+Ofs+DelLen, Len-(Ofs+DelLen)); // move data
+       Len-=DelLen;                                         // update the number of bytes n the buffer
+       // printf(" => Len:%d\n", (int)Len);
        Data[Len]=0; return DelLen; }
 
    int SearchLineTerm(int StartIdx=0) // search for a line terminator: \r or \n
@@ -284,86 +298,86 @@ class Socket                   // IP socket
   public:
 
    Socket()
-     { SocketFile=(-1); }
+   { SocketFile=(-1); }
 
-   ~Socket()
-     { Close(); }
+  ~Socket()
+   { Close(); }
 
    // create a socket
    int Create(int Type=SOCK_STREAM, int Protocol=IPPROTO_TCP)
-     { Close();
-       SocketFile=socket(PF_INET, Type, Protocol);
-       return SocketFile; }
+   { Close();
+     SocketFile=socket(PF_INET, Type, Protocol);
+     return SocketFile; }
    int Create_STREAM(void) { return Create(SOCK_STREAM, IPPROTO_TCP); }
    int Create_DGRAM(void) { return Create(SOCK_DGRAM, 0); }
 
    int Copy(int NewSocketFile)
-     { Close();
-       return SocketFile=NewSocketFile; }
+   { Close();
+     return SocketFile=NewSocketFile; }
 
    // set connect/read/write to be blocking or not
    int setBlocking(int Block=1)
-     { int Flags = fcntl(SocketFile,F_GETFL,0);
-       if(Block) Flags &= ~O_NONBLOCK;
-            else Flags |=  O_NONBLOCK;
-       return fcntl(SocketFile,F_SETFL,Flags); }
+   { int Flags = fcntl(SocketFile,F_GETFL,0);
+     if(Block) Flags &= ~O_NONBLOCK;
+          else Flags |=  O_NONBLOCK;
+     return fcntl(SocketFile,F_SETFL,Flags); }
 
    int setNonBlocking(void)
-     { return setBlocking(0); }
+   { return setBlocking(0); }
 
    // avoids waiting (in certain cases) till the socket closes completely after the previous server exits
    int setReuseAddress(int Set=1)
-     { return setsockopt(SocketFile, SOL_SOCKET, SO_REUSEADDR, &Set, sizeof(Set)); }
+   { return setsockopt(SocketFile, SOL_SOCKET, SO_REUSEADDR, &Set, sizeof(Set)); }
 
    int setKeepAlive(int KeepAlive=1) // keep checking if connection alive while no data is transmitted
-     { return setsockopt(SocketFile, SOL_SOCKET, SO_KEEPALIVE, &KeepAlive, sizeof(KeepAlive)); }
+   { return setsockopt(SocketFile, SOL_SOCKET, SO_KEEPALIVE, &KeepAlive, sizeof(KeepAlive)); }
 
    int setLinger(int ON, int Seconds) // gracefull behavior on socket close
-     { struct linger Linger; Linger.l_onoff=ON; Linger.l_linger=Seconds;
-       return setsockopt(SocketFile, SOL_SOCKET, SO_LINGER, &Linger, sizeof(Linger)); }
+   { struct linger Linger; Linger.l_onoff=ON; Linger.l_linger=Seconds;
+     return setsockopt(SocketFile, SOL_SOCKET, SO_LINGER, &Linger, sizeof(Linger)); }
 
    int setNoDelay(int ON=1)
    { return setsockopt(SocketFile, IPPROTO_TCP, TCP_NODELAY, &ON, sizeof(ON)); }
 
    int setSendBufferSize(int Bytes)
-     { return setsockopt(SocketFile, SOL_SOCKET, SO_SNDBUF, &Bytes, sizeof(Bytes)); }
+   { return setsockopt(SocketFile, SOL_SOCKET, SO_SNDBUF, &Bytes, sizeof(Bytes)); }
 
    int getSendBufferSize(void)
-     { int Bytes=0; socklen_t Size;
-       int Error=getsockopt(SocketFile, SOL_SOCKET, SO_SNDBUF, &Bytes, &Size);
-       return Error<0 ? -1:Bytes; }
+   { int Bytes=0; socklen_t Size;
+     int Error=getsockopt(SocketFile, SOL_SOCKET, SO_SNDBUF, &Bytes, &Size);
+     return Error<0 ? -1:Bytes; }
 
    int setReceiveBufferSize(int Bytes)
-     { return setsockopt(SocketFile, SOL_SOCKET, SO_RCVBUF, &Bytes, sizeof(Bytes)); }
+   { return setsockopt(SocketFile, SOL_SOCKET, SO_RCVBUF, &Bytes, sizeof(Bytes)); }
 
    int getReceiveBufferSize(void)
-     { int Bytes=0; socklen_t Size;
-       int Error=getsockopt(SocketFile, SOL_SOCKET, SO_RCVBUF, &Bytes, &Size);
-       return Error<0 ? -1:Bytes; }
+   { int Bytes=0; socklen_t Size;
+     int Error=getsockopt(SocketFile, SOL_SOCKET, SO_RCVBUF, &Bytes, &Size);
+     return Error<0 ? -1:Bytes; }
 
 /* on Cygwin send and receive timeouts seem to have no effect ...
 #ifdef __WINDOWS__
-   int setReceiveTimeout(double Seconds) // a blocking receive() will not wait forever
+   int setReceiveTimeout(float Seconds) // a blocking receive() will not wait forever
    { long Time = (long)floor(1000*Seconds+0.5);
      return setsockopt(SocketFile, SOL_SOCKET, SO_RCVTIMEO, &Time, sizeof(Time)); }
 
-   int setSendTimeout(double Seconds)   // a blocking send() will not wait forever
+   int setSendTimeout(float Seconds)   // a blocking send() will not wait forever
    { long Time = (long)floor(1000*Seconds+0.5);
       return setsockopt(SocketFile, SOL_SOCKET, SO_SNDTIMEO, &Time, sizeof(Time)); }
 #endif
 */
 
 #ifdef __CYGWIN__  // dummy routine for Cygwin, only to satify the compiler
-   int setReceiveTimeout(double Seconds) { return -1; }
-   int setSendTimeout(double Seconds) { return -1; }
+   int setReceiveTimeout(float Seconds) { return -1; }
+   int setSendTimeout(float Seconds) { return -1; }
 #else
-   int setReceiveTimeout(double Seconds) // a blocking receive() will not wait forever
+   int setReceiveTimeout(float Seconds) // a blocking receive() will not wait forever
      { struct timeval Time;
        Time.tv_sec  = (long)floor(Seconds);
        Time.tv_usec = (long)floor(1000000*(Seconds-Time.tv_sec)+0.5);
        return setsockopt(SocketFile, SOL_SOCKET, SO_RCVTIMEO, &Time, sizeof(Time)); }
 
-   int setSendTimeout(double Seconds)   // a blocking send() will not wait forever
+   int setSendTimeout(float Seconds)   // a blocking send() will not wait forever
      { struct timeval Time;
        Time.tv_sec  = (long)floor(Seconds);
        Time.tv_usec = (long)floor(1000000*(Seconds-Time.tv_sec)+0.5);
@@ -373,75 +387,93 @@ class Socket                   // IP socket
 #if defined(__MACH__) || defined(__CYGWIN__)
 #else
    int getMTU(void)
-     { int Bytes;
-       if(ioctl(SocketFile, SIOCGIFMTU, &Bytes)<0) return -1;
-       return Bytes; }
+   { int Bytes;
+     if(ioctl(SocketFile, SIOCGIFMTU, &Bytes)<0) return -1;
+     return Bytes; }
 #endif
 
    int getReceiveQueue(void)
-     { int Bytes;
-       if(ioctl(SocketFile, FIONREAD, &Bytes)<0) return -1;
-       return Bytes; }
+   { int Bytes;
+     if(ioctl(SocketFile, FIONREAD, &Bytes)<0) return -1;
+     return Bytes; }
+
+   int getRecvQueue(int &Bytes)
+   { return ioctl(SocketFile, FIONREAD, &Bytes); }
+
+   int getSendQueue(int &Bytes)
+   { return ioctl(SocketFile, TIOCOUTQ, &Bytes); }
 
    int getError(void)
-     { int ErrorCode=0;
-       socklen_t Size=sizeof(ErrorCode);
-       int Error=getsockopt(SocketFile, SOL_SOCKET, SO_ERROR, &ErrorCode, &Size);
-       return Error<0 ? -1:ErrorCode; }
+   { int ErrorCode=0;
+     socklen_t Size=sizeof(ErrorCode);
+     int Error=getsockopt(SocketFile, SOL_SOCKET, SO_ERROR, &ErrorCode, &Size);
+     return Error<0 ? -1:ErrorCode; }
 
    int isListenning(void)
-     { int Yes=0;
-       socklen_t Size=sizeof(Yes);
-       int Error=getsockopt(SocketFile, SOL_SOCKET, SO_ACCEPTCONN, &Yes, &Size);
-       return Error<0 ? -1:Yes; }
+   { int Yes=0;
+     socklen_t Size=sizeof(Yes);
+     int Error=getsockopt(SocketFile, SOL_SOCKET, SO_ACCEPTCONN, &Yes, &Size);
+     return Error<0 ? -1:Yes; }
 
    // listen for incoming UDP connections (become a UDP server)
    int Listen_DGRAM(unsigned short ListenPort)
-     { if(SocketFile<0) { if(Create_DGRAM()<0) return -1; }
+   { if(SocketFile<0) { if(Create_DGRAM()<0) return -1; }
 
-       setReuseAddress(1);
+     setReuseAddress(1);
 
-       struct sockaddr_in ListenAddress;
-       ListenAddress.sin_family      = AF_INET;
-       ListenAddress.sin_addr.s_addr = htonl(INADDR_ANY);
-       ListenAddress.sin_port        = htons(ListenPort);
+     struct sockaddr_in ListenAddress;
+     ListenAddress.sin_family      = AF_INET;
+     ListenAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+     ListenAddress.sin_port        = htons(ListenPort);
 
-       if(bind(SocketFile, (struct sockaddr *) &ListenAddress, sizeof(ListenAddress))<0)
-       { Close(); return -1; }
+     if(bind(SocketFile, (struct sockaddr *) &ListenAddress, sizeof(ListenAddress))<0)
+     { Close(); return -1; }
 
-       return 0; }
+     return 0; }
 
    // listen for incoming TCP connections (become a TCP server)
    int Listen(unsigned short ListenPort, int MaxConnections=8)
-     { if(SocketFile<0) { if(Create()<0) return -1; }
+   { if(SocketFile<0) { if(Create()<0) return -1; }
 
-       setReuseAddress(1);
+     setReuseAddress(1);
 
-       struct sockaddr_in ListenAddress;
-       ListenAddress.sin_family      = AF_INET;
-       ListenAddress.sin_addr.s_addr = htonl(INADDR_ANY);
-       ListenAddress.sin_port        = htons(ListenPort);
+     struct sockaddr_in ListenAddress;
+     bzero(&ListenAddress, sizeof(ListenAddress));
+     ListenAddress.sin_family      = AF_INET;
+     ListenAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+     ListenAddress.sin_port        = htons(ListenPort);
 
-       if(bind(SocketFile, (struct sockaddr *) &ListenAddress, sizeof(ListenAddress))<0)
-       { Close(); return -1; }
+     if(bind(SocketFile, (struct sockaddr *) &ListenAddress, sizeof(ListenAddress))<0)
+     { Close(); return -1; }
 
-       if(listen(SocketFile, MaxConnections)<0)
-       { Close(); return -1; }
+     if(listen(SocketFile, MaxConnections)<0)
+     { Close(); return -1; }
 
-       return 0; }
+     return 0; }
 
    // accept a new client (when being a server)
    int Accept(Socket &ClientSocket, SocketAddress &ClientAddress)
-     { ClientSocket.Close();
-       socklen_t ClientAddressLength=sizeof(ClientAddress.Address);
-       return ClientSocket.SocketFile=accept(SocketFile, (struct sockaddr *) &(ClientAddress.Address), &ClientAddressLength); }
+   { ClientSocket.Close();
+     socklen_t ClientAddressLength=sizeof(ClientAddress.Address);
+     return ClientSocket.SocketFile=accept(SocketFile, (struct sockaddr *) &(ClientAddress.Address), &ClientAddressLength); }
 
    // connect to a remote server
-   int Connect(SocketAddress &ServerAddress)
+   int Connect(SocketAddress &ServerAddress, float Timeout=10.0)
      { if(SocketFile<0) { if(Create_STREAM()<0) return -1; } // if no socket yet, create a STREAM-type one.
+       if(Timeout>0) setSendTimeout(Timeout);
        socklen_t ServerAddressLength=sizeof(ServerAddress.Address);
        return connect(SocketFile, (struct sockaddr *) &(ServerAddress.Address), ServerAddressLength); }
-
+/*
+   int Connect(SocketAddress &ServerAddress, float Timeout=5.0)
+     { if(SocketFile<0) { if(Create_STREAM()<0) return -1; } // if no socket yet, create a STREAM-type one.
+       setNonBlocking();
+       socklen_t ServerAddressLength=sizeof(ServerAddress.Address);
+       int Err=connect(SocketFile, (struct sockaddr *) &(ServerAddress.Address), ServerAddressLength);
+       if(Err>=0) return Err;                                // connected immediately
+       if(errno!=EINPROGRESS) { Close(); return Err; }       // something went wrong
+       //
+       return Err; }
+*/
    // send data (on a connected socket)
    int Send(void *Message, int Bytes, int Flags=MSG_NOSIGNAL)
      { return send(SocketFile, Message, Bytes, Flags); }
@@ -450,10 +482,10 @@ class Socket                   // IP socket
      { return Send((void *)Message, strlen(Message)); }
 
    int Send(SocketBuffer &Buffer, int Flags=MSG_NOSIGNAL)
-     { size_t Bytes = Buffer.Len-Buffer.Done; // if(Bytes>4096) Bytes=4096;
-       int SentBytes=Send(Buffer.Data+Buffer.Done, Bytes, Flags);
-       if(SentBytes>0) Buffer.Done+=SentBytes;
-       return SentBytes; }
+   { size_t Bytes = Buffer.Len-Buffer.Done; // if(Bytes>4096) Bytes=4096;
+     int SentBytes=Send(Buffer.Data+Buffer.Done, Bytes, Flags);
+     if(SentBytes>0) Buffer.Done+=SentBytes;
+     return SentBytes; }
 
 #ifndef __CYGWIN__
    int SendFile(const char *FileName)
@@ -462,19 +494,27 @@ class Socket                   // IP socket
      int Ret=sendfile(SocketFile, File, 0, Size);
      close(File);
      return Ret; }
+
+   int SendFile(int File)
+   { struct stat Stat; int Err=fstat(File, &Stat); if(Err<0) return Err;
+     int Size=Stat.st_size;
+     // printf("SendFile(%s) File=%d SocketFile=%d Size=%d\n", FileName, File, SocketFile, Size);
+     int Ret=sendfile(SocketFile, File, 0, Size);
+     // printf("SendFile(%s) File=%d SocketFile=%d Size=%d Ret=%d\n", FileName, File, SocketFile, Size, Ret);
+     return Ret; }
 #endif
 
    // send data (on a non-connected socket)
    int SendTo(const void *Message, int Bytes, SocketAddress Address, int Flags=MSG_NOSIGNAL)
-     { socklen_t AddressLength=sizeof(Address.Address);
-       return sendto(SocketFile, Message, Bytes, Flags, (struct sockaddr *) &(Address.Address), AddressLength); }
+   { socklen_t AddressLength=sizeof(Address.Address);
+     return sendto(SocketFile, Message, Bytes, Flags, (struct sockaddr *) &(Address.Address), AddressLength); }
 
    int SendTo(const void *Message, int Bytes, int Flags=MSG_NOSIGNAL)
-     { return sendto(SocketFile, Message, Bytes, Flags, 0, 0); }
+   { return sendto(SocketFile, Message, Bytes, Flags, 0, 0); }
 
    // say: I won't send any more data on this connection
    int SendShutdown(void)
-     { return shutdown(SocketFile, SHUT_WR); }
+   { return shutdown(SocketFile, SHUT_WR); }
 
 #ifndef __CYGWIN__ // Cygwin C++ does not know abour TIOCOUTQ ?
    int getSendQueue(void)
@@ -485,43 +525,67 @@ class Socket                   // IP socket
 
    // receive data (on a stream socket)
    int Receive(void *Message, int MaxBytes, int Flags=MSG_NOSIGNAL)
-     { int Len=recv(SocketFile, Message, MaxBytes, Flags);
-       if(Len>=0) return Len;
-       return errno==EWOULDBLOCK ? 0:Len; }
+   { int Len=recv(SocketFile, Message, MaxBytes, Flags);
+     if(Len>=0) return Len;
+     return errno==EWOULDBLOCK ? 0:Len; }
+
+   int ReceiveLine(char *Msg, int MaxBytes, int Timeout=1000, int Idle=10, int Flags=MSG_NOSIGNAL)
+   { int Done=0; MaxBytes--;
+     for( ; Done<MaxBytes; )
+     { int Len=Receive(Msg+Done, 1, Flags);
+       if(Len<0) return Len;                                                   // if negative then give up
+       if(Msg[Done]<' ')
+       { if(Done>0) break;
+              else  continue; }
+       if(Len==0) { usleep(1000*Idle); Timeout-=Idle; if(Timeout<=0) break; }  // if no new bytes then idle wait a little
+       Done+=Len; }
+     Msg[Done]=0;
+     return Done; }
+
+   // receive (complete) message of a given length
+   int ReceiveMsg(char *Msg, int Bytes, int Timeout=1000, int Idle=10, int Flags=MSG_NOSIGNAL)
+   { int Done=0;                                                               // [bytes] count done bytes
+     for( ; Done<Bytes; )                                                      // loop as long as not all Bytes are done
+     { int Len=Receive(Msg+Done, Bytes-Done, Flags);                           // attempt to receive new bytes
+       // printf("ReceiveMsg(%d) %d bytes (%d, %dms)\n", Bytes, Len, Done, Timeout);
+       if(Len<0) return Len;                                                   // if negative then give up
+       if(Len==0) { usleep(1000*Idle); Timeout-=Idle; if(Timeout<=0) break; }  // if no new bytes then idle wait a little
+       Done+=Len; }                                                            // count new recieved bytes
+     return Done; }                                                            // return number of received bytes
 
    // receive (stream) data into a buffer
    int Receive(SocketBuffer &Buffer, int Flags=MSG_NOSIGNAL)
-     { size_t NewSize=Buffer.Len+Buffer.AllocUnit/2;
-       size_t Allocated=Buffer.Relocate(NewSize);
-       int MaxBytes=Allocated-Buffer.Len-1;
-       int ReceiveBytes=Receive(Buffer.Data+Buffer.Len, MaxBytes, Flags);
-       // printf("Allocated = %d, Receive(%d) => %d\n", Allocated, MaxBytes, ReceiveBytes);
-       if(ReceiveBytes>0) { Buffer.Len+=ReceiveBytes; Buffer.Data[Buffer.Len]=0; }
-       return ReceiveBytes; }
+   { size_t NewSize=Buffer.Len+Buffer.AllocUnit/2;                             //
+     size_t Allocated=Buffer.Relocate(NewSize);
+     int MaxBytes=Allocated-Buffer.Len-1;
+     int ReceiveBytes=Receive(Buffer.Data+Buffer.Len, MaxBytes, Flags);
+     // printf("Allocated = %d, Receive(%d) => %d\n", Allocated, MaxBytes, ReceiveBytes);
+     if(ReceiveBytes>0) { Buffer.Len+=ReceiveBytes; Buffer.Data[Buffer.Len]=0; }
+     return ReceiveBytes; }
 
    // receive data (on a non-connected socket)
    int ReceiveFrom(void *Message, int MaxBytes, SocketAddress &Address, int Flags=MSG_NOSIGNAL)
-     { socklen_t AddressLength=sizeof(Address.Address);
-       return recvfrom(SocketFile, Message, MaxBytes, Flags, (struct sockaddr *) &(Address.Address), &AddressLength); }
+   { socklen_t AddressLength=sizeof(Address.Address);
+     return recvfrom(SocketFile, Message, MaxBytes, Flags, (struct sockaddr *) &(Address.Address), &AddressLength); }
 
    // tell if socket is open
    int isOpen(void) const
-     { return SocketFile>=0; }
+   { return SocketFile>=0; }
 
    // close the socket
    int Close(void)
-     { if(SocketFile>=0) close(SocketFile);
-       SocketFile=(-1); return 0; }
+   { if(SocketFile>=0) close(SocketFile);
+     SocketFile=(-1); return 0; }
 
    // get the local IP and port
    int getLocalAddress(SocketAddress &Address)
-     { socklen_t AddressLength=sizeof(Address.Address);
-       return getsockname(SocketFile, (struct sockaddr *) &(Address.Address), &AddressLength); }
+   { socklen_t AddressLength=sizeof(Address.Address);
+     return getsockname(SocketFile, (struct sockaddr *) &(Address.Address), &AddressLength); }
 
    // get the remote IP and port
    int getRemoteAddress(SocketAddress &Address)
-     { socklen_t AddressLength=sizeof(Address.Address);
-       return getpeername(SocketFile, (struct sockaddr *) &(Address.Address), &AddressLength); }
+   { socklen_t AddressLength=sizeof(Address.Address);
+     return getpeername(SocketFile, (struct sockaddr *) &(Address.Address), &AddressLength); }
 
    static void CopyNetToHost(uint32_t *Dst, uint32_t *Src, int Words)
    { for( ; Words; Words--) (*Dst++) = ntohl(*Src++); }
@@ -534,7 +598,7 @@ class Socket                   // IP socket
 class UDP_Sender
 { public:
    Socket Sock;
-   const static int MaxDest = 4;
+   const static int MaxDest = 8;
    SocketAddress Dest[MaxDest];
 
   public:
@@ -547,6 +611,12 @@ class UDP_Sender
    int isOpen(void) const   { return Sock.isOpen(); }
    int Close(void)          { return Sock.Close(); }
    int setNonBlocking(void) { return Sock.setNonBlocking(); }
+
+   int countDest(void) const
+   { int Count=0;
+     for(int Idx=0; Idx<MaxDest; Idx++)
+     { if(Dest[Idx].getIP()) Count++; }
+     return Count; }
 
    int addDest(const char *Addr)
    { for(int Idx=0; Idx<MaxDest; Idx++)

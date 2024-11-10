@@ -171,8 +171,9 @@ template <class Type>
 template <class Float>
  int getCpuTemperature(Float &Temperature)
 { int IntValue;
-  if(getSysValue(IntValue, "/sys/class/thermal/thermal_zone0/temp", "%d")<0)
-  { if(getSysValue(IntValue, "/sys/class/hwmon/hwmon0/device/temp1_input", "%d")<0) return -1; }
+  if(getSysValue(IntValue, "/sys/class/thermal/thermal_zone0/temp"     , "%d")<0
+  && getSysValue(IntValue, "/sys/class/hwmon/hwmon1/temp1_input"       , "%d")<0
+  && getSysValue(IntValue, "/sys/class/hwmon/hwmon0/device/temp1_input", "%d")<0) return -1;
   Temperature=0.001*IntValue; return 0; }
 
 template <class Float>

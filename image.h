@@ -26,7 +26,7 @@
 #include <stdint.h>
 #include <math.h>
 
-// #include <png.h>
+#include <png.h>
 #include <jpeglib.h>
 #include <setjmp.h>
 
@@ -200,7 +200,7 @@ template <class Type=float>
        }
        fclose(File);
        return Width*Height; }
-/*
+
    int WritePNG_8bpp(const char *FileName, Type LogRef=0, Type Scale=1, Type Bias=0) const
      { FILE *File=fopen(FileName, "wb"); if(File==0) return -1;
 
@@ -237,7 +237,6 @@ template <class Type=float>
        png_destroy_write_struct(&Struct, (png_infopp)0);
        fclose(File);
        return Width*Height; }
-*/
 
    int WriteJPG_8bpp(int Fd, int Quality=80, Type LogRef=0, Type Scale=1, Type Bias=0, bool VertFlip=0) const
      { FILE *File=fdopen(Fd, "wb"); if(File==0) return -1;

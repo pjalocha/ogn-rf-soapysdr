@@ -76,6 +76,10 @@ void Format_Hex( void (*Output)(char), uint32_t Word )
 { Format_Hex(Output, (uint8_t)(Word>>24)); Format_Hex(Output, (uint8_t)(Word>>16));
   Format_Hex(Output, (uint8_t)(Word>>8));  Format_Hex(Output, (uint8_t)Word); }
 
+void Format_Hex( void (*Output)(char), uint64_t Word )
+{ Format_Hex(Output, (uint32_t)(Word>>32));
+  Format_Hex(Output, (uint32_t)(Word    )); }
+
 void Format_MAC( void (*Output)(char), uint8_t *MAC, uint8_t Len)
 { for(uint8_t Idx=0; Idx<Len; Idx++)
   { if(Idx) (*Output)(':');
@@ -185,6 +189,27 @@ void Format_SignDec( void (*Output)(char), int64_t Value, uint8_t MinDigits, uin
 
 // ------------------------------------------------------------------------------------------
 
+uint8_t Format_UnsDec(char *Out, uint64_t Value, uint8_t MinDigits, uint8_t DecPoint)
+{ uint64_t Base; uint8_t Pos, Len=0;
+  for( Pos=20, Base=10000000000000000000llu; Base; Base/=10, Pos--)
+  { uint8_t Dig;
+    if(Value>=Base)
+    { Dig=Value/Base; Value-=Dig*Base; }
+    else
+    { Dig=0; }
+    if(Pos==DecPoint) { (*Out++)='.'; Len++; }
+    if( (Pos<=MinDigits) || (Dig>0) || (Pos<=DecPoint) )
+    { (*Out++)='0'+Dig; Len++; MinDigits=Pos; }
+    // (*Out)=0;
+  }
+  return Len; }
+
+uint8_t Format_SignDec(char *Out, int64_t Value, uint8_t MinDigits, uint8_t DecPoint, uint8_t NoPlus)
+{ uint8_t Len=0;
+  if(Value<0) { (*Out++)='-'; Len++; Value=(-Value); }
+         else if(!NoPlus) { (*Out++)='+'; Len++; }
+  return Len+Format_UnsDec(Out, (uint64_t)Value, MinDigits, DecPoint); }
+
 uint8_t Format_UnsDec(char *Out, uint32_t Value, uint8_t MinDigits, uint8_t DecPoint)
 { uint32_t Base; uint8_t Pos, Len=0;
   for( Pos=10, Base=1000000000; Base; Base/=10, Pos--)
@@ -204,7 +229,7 @@ uint8_t Format_SignDec(char *Out, int32_t Value, uint8_t MinDigits, uint8_t DecP
 { uint8_t Len=0;
   if(Value<0) { (*Out++)='-'; Len++; Value=(-Value); }
          else if(!NoPlus) { (*Out++)='+'; Len++; }
-  return Len+Format_UnsDec(Out, Value, MinDigits, DecPoint); }
+  return Len+Format_UnsDec(Out, (uint32_t)Value, MinDigits, DecPoint); }
 
 uint8_t Format_Hex( char *Output, uint8_t Byte )
 { (*Output++) = HexDigit(Byte>>4); (*Output++)=HexDigit(Byte&0x0F); return 2; }
@@ -245,7 +270,7 @@ uint8_t Format_Latitude(char *Out, int32_t Lat)
   uint32_t Deg=Lat/600000;
   Lat -= 600000*Deg;
   Len+=Format_UnsDec(Out+Len, Deg, 2, 0);
-  Len+=Format_UnsDec(Out+Len, Lat, 6, 4);
+  Len+=Format_UnsDec(Out+Len, (uint32_t)Lat, 6, 4);
   Out[Len++]=Sign;
   return Len; }
 
@@ -256,7 +281,7 @@ uint8_t Format_Longitude(char *Out, int32_t Lon)
   uint32_t Deg=Lon/600000;
   Lon -= 600000*Deg;
   Len+=Format_UnsDec(Out+Len, Deg, 3, 0);
-  Len+=Format_UnsDec(Out+Len, Lon, 6, 4);
+  Len+=Format_UnsDec(Out+Len, (uint32_t)Lon, 6, 4);
   Out[Len++]=Sign;
   return Len; }
 

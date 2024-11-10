@@ -284,7 +284,7 @@ template <class Type>
      Cond.Unlock();
      return Size; }
 
-   int ReuseSize(void)                // how many object read for use (already allocated) ?
+   int ReuseSize(void)               // how many objects waiting in the queue ?
    { Cond.Lock();
      int Size = Reuse.size();
      Cond.Unlock();

@@ -9,12 +9,15 @@ template <class Float>
    int              FFTsize;
    double           Threshold;
 
-#ifdef USE_FFTSG
-   DFTsg<Float>     FwdFFT;
-   DFTsg<Float>     BwdFFT;
-#else
+#if defined(USE_FFTAV)
+   DFTav<Float>     FwdFFT;
+   DFTav<Float>     InvFFT;
+#elif defined(USE_FFTW3)
    DFT1d<Float>     FwdFFT;
-   DFT1d<Float>     BwdFFT;
+   DFT1d<Float>     InvFFT;
+#else
+   DFTsg<Float>     FwdFFT;
+   DFTsg<Float>     InvFFT;
 #endif
    Float           *Window;
    Float           *Sort;
@@ -39,7 +42,7 @@ template <class Float>
 
    int Preset(void)
    { FwdFFT.PresetForward(FFTsize);
-     BwdFFT.PresetBackward(FFTsize);
+     InvFFT.PresetInverse(FFTsize);
      Window=(Float *)realloc(Window, FFTsize*sizeof(Float));
      Sort  =(Float *)realloc(Sort,   FFTsize*sizeof(Float));
      FwdFFT.SetSineWindow(Window, FFTsize, (Float)(1.0/sqrt(FFTsize)) );
@@ -56,7 +59,7 @@ template <class Float>
      for(int Slide=0; Slide<FFTslides; Slide++)               // loop over FFT slides (or time)
      { Pulses+=Process(Spectra, Pwr); Spectra+=FFTsize; Pwr+=FFTsize; }
 
-     ReconstrFFT(*OutBuffer, SpectraBuffer, BwdFFT, Window);  // reconstruct input samples
+     ReconstrFFT(*OutBuffer, SpectraBuffer, InvFFT, Window);  // reconstruct input samples
      OutBuffer->Crop(FFTsize/2, FFTsize/2);
      return Pulses; }
 /*

@@ -41,7 +41,7 @@
 
 #include <rtl-sdr.h>
 
-class RTLSDR
+class RTLSDR                     // RTL-SDR receiver
 { public:
    MutEx         Lock;           // for multi-threading
 
@@ -52,15 +52,15 @@ class RTLSDR
 
   uint32_t       FreqRaster;     // [Hz] use only multiples of this base value to avoid tuning errors
 
-   int           Bandwidths;
-   int           Bandwidth[16];
+   int           Bandwidths;     // number of Bandwidth's possible
+   int           Bandwidth[16];  //
 
-   int           Stages;
-   int           StageGains[8];
-   char          StageName[8][32];
-   int           StageGain[8][32];
+   int           Stages;           // number gain-stages
+   int           StageGains[8];    //
+   char          StageName[8][32]; //
+   int           StageGain[8][32]; //
 
-   uint64_t      BytesRead;      // Counts number of bytes read (1 sample = 2 bytes: I/Q)
+   uint64_t      BytesRead;        // Counts number of bytes read (1 sample = 2 bytes: I/Q)
    int         (*Callback)(uint8_t *Buffer, int Samples, double SampleTime, double SamplePeriod, void *Contex);
    void         *CallbackContext;
 
@@ -128,8 +128,8 @@ class RTLSDR
      return rtlsdr_set_center_freq(Device, Frequency); } // [Hz]
   uint32_t getCenterFreq(void)                  { return rtlsdr_get_center_freq(Device); } // (fast call)
 
-   int     setFreqCorrection(int PPM)           { return rtlsdr_set_freq_correction(Device, PPM); } // [PPM] (Part-Per-Million)
-   int     getFreqCorrection(void)              { return rtlsdr_get_freq_correction(Device); } // (fast call)
+   int     setFreqCorrection(int PPM)           { return rtlsdr_set_freq_correction(Device, PPM); }  // [PPM] (Part-Per-Million)
+   int     getFreqCorrection(void)              { return rtlsdr_get_freq_correction(Device); }       // (fast call)
 
    int setTunerBandwidth(int Bandwidth) { return rtlsdr_set_tuner_bandwidth(Device, Bandwidth); }    // [Hz]
    // int setTunerBandwidth(int Bandwidth) { return rtlsdr_set_if_bandwidth(Device, Bandwidth); }    // [Hz]
@@ -195,7 +195,7 @@ class RTLSDR
    int readEEPROM(       uint8_t *Data, uint8_t Ofs, uint16_t Len) { return rtlsdr_read_eeprom(Device, Data, Ofs, Len); }
    int writeEEPROM(const uint8_t *Data, uint8_t Ofs, uint16_t Len) { return rtlsdr_write_eeprom(Device, (uint8_t *)Data, Ofs, Len); }
 
-   double getTime(void) const                                                 // read the system time at this very moment
+   double getTime(void) const                                                 // [sec] read the system time at this very moment
 #ifndef __MACH__ // _POSIX_TIMERS
    { struct timespec now; clock_gettime(RefClock, &now); return now.tv_sec + 1e-9*now.tv_nsec; }
 #else                                                                         // for OSX, there is no clock_gettime()
@@ -253,7 +253,7 @@ class RTLSDR
    double SampleTimeJitter(void) { return sqrt(SampleTime_DMS); }
 
    static void StaticCallback(unsigned char *Buffer, uint32_t Len, void *Contex)          // callback that receives the data
-   { RTLSDR *This = (RTLSDR *)Contex; return This->ClassCallback(Buffer, Len); }          // "This" points now to this class instance
+   { RTLSDR *This = (RTLSDR *)Contex; This->ClassCallback(Buffer, Len); }                 // "This" points now to this class instance
 
    void ClassCallback(unsigned char *Buffer, uint32_t Len)                                // callback but already in this class instance
    { Lock.Lock();
@@ -280,7 +280,8 @@ class RTLSDR
                          SampleTime - Samples*SamplePeriod, SamplePeriod, // SampleTime = time of the first sample, SamplePeriod = time period of one sample
                          CallbackContext);
      }
-     if(Ret) CancelAsync();                                               // call the user callback, if it returns non-zero, then stop data acquisition
+     // if(Ret) { printf("ClassCallback( , %d) Ret=%d CancelAsync()=>%d\n", Len, Ret, CancelAsync()); }
+     if(Ret) { CancelAsync(); }                                           // call the user callback, if it returns non-zero, then stop data acquisition
 
      SampleTime += Samples * SamplePeriod;            // increment predicted time for this batch
      double TimeDiff = ReadTime - SampleTime;         // difference: time read now versus predicted time

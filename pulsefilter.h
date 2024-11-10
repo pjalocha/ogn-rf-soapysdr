@@ -15,7 +15,7 @@ class PulseFilter
   public:
    PulseFilter() { PulseBox.Preset(PulseBoxSize); Threshold=0; Pulses=0; Duty=0; }
 
-   int Process(SampleBuffer<uint8_t> &Buffer, uint8_t Bias=127)
+   int Process(const SampleBuffer<uint8_t> &Buffer, uint8_t Bias=127)
    { PulseBox.Clear(); Pulses=0;
      if(Threshold<=0) return 0;
      int Samples = Buffer.Samples();

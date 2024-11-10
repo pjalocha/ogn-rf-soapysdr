@@ -13,6 +13,7 @@
 #include "thread.h"     // multi-thread stuff
 #include "fft.h"        // Fast Fourier Transform
 
+#include <SoapySDR/Version.h>
 #include <SoapySDR/Device.h>
 #include <SoapySDR/Formats.h>
 
@@ -24,7 +25,13 @@
 
 #include "freqplan.h"
 
-#include "jpeg.h"
+#include "image.h"
+#ifdef WITH_JPEG
+#include "jpeg-compr.h"
+#else
+#include "png-compr.h"
+#endif
+
 #include "socket.h"
 #include "sysmon.h"
 
@@ -416,7 +423,12 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
        }
      }
 
+#if defined(SOAPY_SDR_API_VERSION) && (SOAPY_SDR_API_VERSION >= 0x00080000)
+     Stream = SoapySDRDevice_setupStream(SDR, SOAPY_SDR_RX, Format, 0, 0, 0);
+     if(Stream==0)
+#else
      if(SoapySDRDevice_setupStream(SDR, &Stream, SOAPY_SDR_RX, Format, 0, 0, 0) != 0) // ( , , , format, *channels, numChannels, *args)
+#endif
      { printf("SDR.setupStream failes: %s\n", SoapySDRDevice_lastError()); StopReq=1; }
      SoapySDRDevice_activateStream(SDR, Stream, 0, 0, 0); // ( , , flags, timeNs, numElems)         // start streaming
      // printf("\n");
@@ -523,7 +535,7 @@ class RF_Acq                                    // acquire wideband (1MHz) RF da
      }
 
      SoapySDRDevice_deactivateStream(SDR, Stream, 0, 0); // ( , , flags, timeNs)                  // stop streaming
-     SoapySDRDevice_closeStream(SDR, Stream);
+     // SoapySDRDevice_closeStream(SDR, Stream);
      SoapySDRDevice_unmake(SDR);
      printf("RF_Acq.Exec() ... Stop\n");
      StopReq=1;
@@ -568,17 +580,31 @@ template <class Float>
    int RemoveDC;                                    // remove DC I/Q bias
 
    // int              FFTsize;
-// #ifdef USE_RPI_GPU_FFT
-//    RPI_GPU_FFT      FFT;
-
-#if USE_CLFFT
-   clFFT            FFT;
-#else
-#ifdef USE_FFTSG
-   DFTsg<Float>     FFT;                            // DFTsg is faster on Orange-PI zero
-#else
+/*
+#ifdef USE_RPI_GPU_FFT
+   RPI_GPU_FFT      FFT;
+#endif
+#ifdef USE_FFTW3
    DFT1d<Float>     FFT;
 #endif
+#ifdef USE_FFTAV
+   DFTav<Float>     FFT;
+#endif
+#ifdef USE_CLFFT
+   clFFT            FFT;
+#endif
+#ifdef USE_FFTSG
+   DFTsg<Float>     FFT;                            // DFTsg is faster on Orange-PI zero
+#endif
+*/
+#if defined(USE_RPI_GPU_FFT)
+   RPI_GPU_FFT      FFT;
+#elif defined(USE_FFTW3)
+   DFT1d<Float>     FFT;                         // FFTsg is slower on Intel but same fast on ARM
+#elif defined(USE_FFTAV)
+   DFTav<Float>     FFT;                         // FFTsg is slower on Intel but same fast on ARM
+#else
+   DFTsg<Float>     FFT;
 #endif
    Float           *Window;                         // Shape for the sliding window FFT
 
@@ -591,10 +617,13 @@ template <class Float>
 
    MessageQueue<Socket *>  SpectrogramQueue;           // sockets send to this queue should be written with a most recent spectrogram
    MessageQueue<Socket *>  WideSpectrogramQueue;       // sockets send to this queue should be written with a most recent wide spectrogram
-#ifdef USE_FFTSG
-   DFTsg<float>            SpectrogramFFT;             // FFT to create spectrograms
-#else
+
+#if defined(USE_FFTW3)
    DFT1d<float>            SpectrogramFFT;             // FFT to create spectrograms
+#elif defined(USE_FFTAV)
+   DFTav<float>            SpectrogramFFT;             // FFT to create spectrograms
+#else
+   DFTsg<float>            SpectrogramFFT;             // FFT to create spectrograms
 #endif
    int                     SpectrogramFFTsize;         // FFT size for the spectrogram
    float                  *SpectrogramWindow;          // Sliding FFT window shape for the spectrogram
@@ -602,7 +631,11 @@ template <class Float>
    SampleBuffer<float>     SpectraPwr;
    float                   SpectraBkgNoise;
    SampleBuffer<uint8_t>   Image;
+#ifdef WITH_JPEG
    JPEG                    JpegImage;
+#else
+   PNG                     PngImage;
+#endif
    char                    HTTPheader[256];
 
   public:
@@ -733,13 +766,18 @@ template <class Float>
          { SlidingFFT(SpectraBuffer, *InpBufferCS16, SpectrogramFFT, SpectrogramWindow);
            SpectraPower(SpectraPwr, SpectraBuffer);                                            // calc. spectra power
            LogImage(Image, SpectraPwr, (float)SpectraBkgNoise, (float)32.0, (float)32.0);      // make the image
+#ifdef WITH_JPEG
            JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                  // and into JPEG
+#else
+           PngImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                   // and into PNG
+#endif
            std::nth_element(SpectraPwr.Data, SpectraPwr.Data+SpectraPwr.Full/2, SpectraPwr.Data+SpectraPwr.Full);
            SpectraBkgNoise=SpectraPwr.Data[SpectraPwr.Full/2];
          }
          while(SpectrogramQueue.Size())
          { Socket *Client; SpectrogramQueue.Pop(Client);
            // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
+#ifdef WITH_JPEG
            sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
 Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
 Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.jpg\"\r\n\r\n",
@@ -747,6 +785,15 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.
                    SpectraPwr.Len, SpectraPwr.Date+SpectraPwr.Time);
            Client->Send(HTTPheader);
            Client->Send(JpegImage.Data, JpegImage.Size);
+#else
+           sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
+Cache-Control: no-cache\r\nContent-Type: image/png\r\nRefresh: 5\r\n\
+Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.png\"\r\n\r\n",
+                   RF->FilePrefix, 1e-6*SpectraPwr.Freq, 1e-6*SpectraPwr.Rate*SpectraPwr.Len/2,
+                   SpectraPwr.Len, SpectraPwr.Date+SpectraPwr.Time);
+           Client->Send(HTTPheader);
+           Client->Send(PngImage.Data, PngImage.Size);
+#endif
            Client->SendShutdown(); Client->Close(); delete Client;
          }
 
@@ -757,13 +804,18 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.
          if(SpectraBkgNoise==0 || WideSpectrogramQueue.Size())
          { SpectraPower(SpectraPwr, Spectra);                                                  // calc. spectra power
            LogImage(Image, SpectraPwr, (float)SpectraBkgNoise, (float)32.0, (float)32.0);      // make the image
+#ifdef WITH_JPEG
            JpegImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                  // and into JPEG
+#else
+           PngImage.Compress_MONO8(Image.Data, Image.Len, Image.Samples() );                  // and into JPEG
+#endif
            std::nth_element(SpectraPwr.Data, SpectraPwr.Data+SpectraPwr.Full/2, SpectraPwr.Data+SpectraPwr.Full);
            SpectraBkgNoise=SpectraPwr.Data[SpectraPwr.Full/2];
          }
          while(WideSpectrogramQueue.Size())
          { Socket *Client; WideSpectrogramQueue.Pop(Client);
            // Client->Send("HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 10\r\n\r\n");
+#ifdef WITH_JPEG
            sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
 Cache-Control: no-cache\r\nContent-Type: image/jpeg\r\nRefresh: 5\r\n\
 Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.jpg\"\r\n\r\n",
@@ -771,6 +823,15 @@ Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.
                    SpectraPwr.Len, SpectraPwr.Date+SpectraPwr.Time);
            Client->Send(HTTPheader);
            Client->Send(JpegImage.Data, JpegImage.Size);
+#else
+           sprintf(HTTPheader, "HTTP/1.1 200 OK\r\n\
+Cache-Control: no-cache\r\nContent-Type: image/png\r\nRefresh: 5\r\n\
+Content-Disposition: attachment; filename=\"%s_%07.3fMHz_%03.1fMsps_%dp_%14.3fs.png\"\r\n\r\n",
+                   RF->FilePrefix, 1e-6*SpectraPwr.Freq, 1e-6*SpectraPwr.Rate*SpectraPwr.Len/2,
+                   SpectraPwr.Len, SpectraPwr.Date+SpectraPwr.Time);
+           Client->Send(HTTPheader);
+           Client->Send(PngImage.Data, PngImage.Size);
+#endif
            Client->SendShutdown(); Client->Close(); delete Client;
          }
        }
